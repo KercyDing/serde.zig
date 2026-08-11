@@ -195,7 +195,7 @@ pub fn main() !void {
     const gpa = std.heap.page_allocator;
 
     const format = parseOutputFormat(options.format) orelse {
-        std.debug.print("unsupported --format '{s}', expected text or json\n", .{options.format});
+        std.debug.print("unsupported -Dbench-format='{s}', expected text or json\n", .{options.format});
         return error.InvalidArgument;
     };
 

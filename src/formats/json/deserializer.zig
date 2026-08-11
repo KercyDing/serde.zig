@@ -1,6 +1,7 @@
 const std = @import("std");
 const scanner_mod = @import("scanner.zig");
 const core_deserialize = @import("../../core/deserialize.zig");
+const reflect = @import("../../reflect.zig");
 
 const Scanner = scanner_mod.Scanner;
 const Token = scanner_mod.Token;
@@ -154,7 +155,7 @@ pub const Deserializer = struct {
         const tok = try self.scanner.next();
         switch (tok) {
             .string => |raw| {
-                inline for (@typeInfo(T).@"enum".fields) |field| {
+                inline for (reflect.enumFields(T)) |field| {
                     if (std.mem.eql(u8, raw, field.name))
                         return @enumFromInt(field.value);
                 }
@@ -165,12 +166,12 @@ pub const Deserializer = struct {
     }
 
     pub fn deserializeUnion(self: *Deserializer, comptime T: type, allocator: Allocator) Error!T {
-        const info = @typeInfo(T).@"union";
+        const fields = reflect.unionFields(T);
         const tok = try self.scanner.peek();
         if (tok == .string) {
             const str_tok = try self.scanner.next();
             const name = str_tok.string;
-            inline for (info.fields) |field| {
+            inline for (fields) |field| {
                 if (field.type == void and std.mem.eql(u8, name, field.name)) {
                     return @unionInit(T, field.name, {});
                 }
@@ -185,7 +186,7 @@ pub const Deserializer = struct {
         const variant_name = key_tok.string;
         try self.scanner.expectColon();
 
-        inline for (info.fields) |field| {
+        inline for (fields) |field| {
             if (std.mem.eql(u8, variant_name, field.name)) {
                 if (field.type == void) {
                     const val_tok = try self.scanner.next();

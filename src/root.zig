@@ -114,4 +114,5 @@ test {
     _ = @import("formats/etf/serializer.zig");
     _ = @import("formats/etf/deserializer.zig");
     _ = @import("formats/etf/distribution.zig");
+    _ = @import("reflect.zig");
 }

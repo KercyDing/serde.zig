@@ -113,25 +113,25 @@ Requires Zig 0.15.2 or later, including current Zig 0.17 development builds.
 
 Supported Zig versions:
 
-| Zig version | Status |
-|-------------|--------|
-| `0.16.0` | current stable, required in docs CI |
-| `0.15.2` | previous stable, fully supported |
+| Zig version           | Status                                                            |
+| --------------------- | ----------------------------------------------------------------- |
+| `0.16.0`              | current stable, required in docs CI                               |
+| `0.15.2`              | previous stable, fully supported                                  |
 | `0.17-dev` / `master` | supported against current development snapshots and tracked in CI |
 
 ## Formats
 
-| Format | Module | Serialize | Deserialize |
-|--------|--------|-----------|-------------|
-| JSON | `serde.json` | + | + |
-| MessagePack | `serde.msgpack` | + | + |
-| Erlang ETF / OTP 29 | `serde.etf` | + | + |
-| TOML | `serde.toml` | + | + |
-| YAML | `serde.yaml` | + | + |
-| XML | `serde.xml` | + | + |
-| ZON | `serde.zon` | + | + |
-| TOON | `serde.toon` | + | + |
-| CSV | `serde.csv` | + | + |
+| Format              | Module          | Serialize | Deserialize |
+| ------------------- | --------------- | --------- | ----------- |
+| JSON                | `serde.json`    | +         | +           |
+| MessagePack         | `serde.msgpack` | +         | +           |
+| Erlang ETF / OTP 29 | `serde.etf`     | +         | +           |
+| TOML                | `serde.toml`    | +         | +           |
+| YAML                | `serde.yaml`    | +         | +           |
+| XML                 | `serde.xml`     | +         | +           |
+| ZON                 | `serde.zon`     | +         | +           |
+| TOON                | `serde.toon`    | +         | +           |
+| CSV                 | `serde.csv`     | +         | +           |
 
 Every format exposes the same API:
 
@@ -1009,7 +1009,7 @@ fields with empty values.
 const bytes = try serde.json.toSliceWith(allocator, value, .{ .escape_js_unsafe = true });
 ```
 
-When true, U+2028 and U+2029 are escaped as ` ` / ` `. They are valid
+When true, U+2028 and U+2029 are escaped as `/`. They are valid
 JSON characters but illegal in JavaScript string literals; escape when embedding
 output in HTML `<script>` tags.
 
@@ -1038,14 +1038,16 @@ Run the benchmark suite with:
 
 ```sh
 zig build bench
-zig build bench -- --format json
-zig build bench -- --filter json
-zig build bench -- --compare std_json
+zig build bench -Dbench-format=json
+zig build bench -Dbench-filter=json
+zig build bench -Dbench-compare-std-json
 ```
 
-Benchmark arguments are passed after `--` because Zig consumes build-step
-arguments before the project runner sees them. The runner defaults to
-`ReleaseFast` for the benchmark executable and the imported `serde` module.
+Benchmark options are passed as `-D` build options. Run `zig build --help` to see the full list (`-Dbench-format`,
+`-Dbench-filter`, `-Dbench-compare-std-json`, `-Dbench-baseline`,
+`-Dbench-threshold`, `-Dbench-out`), alongside `-Dbench-optimize` which
+controls the optimize mode for the benchmark executable and the imported
+`serde` module (defaults to the release-fast equivalent).
 
 Metrics include `ns/op`, `allocations/op`, `bytes allocated/op`, throughput
 MB/s, average output size, warm runs, and selected cold runs. JSON output also
@@ -1055,14 +1057,14 @@ operation so CI artifacts can be compared over time.
 Representative local run, Apple Silicon macOS, Zig 0.16.0, `ReleaseFast`,
 April 24, 2026:
 
-| Case | Operation | Implementation | ns/op | allocs/op | bytes/op | MB/s |
-|------|-----------|----------------|-------|-----------|----------|------|
-| flat struct JSON | serialize | serde | 1916.44 | 1.00 | 132.00 | 25.88 |
-| flat struct JSON | serialize | std_json | 1608.86 | 1.00 | 132.00 | 30.82 |
-| flat struct JSON | deserialize | serde | 1633.18 | 1.00 | 70.00 | 30.37 |
-| flat struct JSON | deserialize | std_json | 1769.35 | 1.00 | 256.00 | 28.03 |
-| borrowed JSON strings | deserialize | serde | 78.17 | 0.00 | 0.00 | 817.44 |
-| array of structs JSON | roundtrip | serde | 5115.59 | 2.00 | 1888.00 | 78.11 |
+| Case                  | Operation   | Implementation | ns/op   | allocs/op | bytes/op | MB/s   |
+| --------------------- | ----------- | -------------- | ------- | --------- | -------- | ------ |
+| flat struct JSON      | serialize   | serde          | 1916.44 | 1.00      | 132.00   | 25.88  |
+| flat struct JSON      | serialize   | std_json       | 1608.86 | 1.00      | 132.00   | 30.82  |
+| flat struct JSON      | deserialize | serde          | 1633.18 | 1.00      | 70.00    | 30.37  |
+| flat struct JSON      | deserialize | std_json       | 1769.35 | 1.00      | 256.00   | 28.03  |
+| borrowed JSON strings | deserialize | serde          | 78.17   | 0.00      | 0.00     | 817.44 |
+| array of structs JSON | roundtrip   | serde          | 5115.59 | 2.00      | 1888.00  | 78.11  |
 
 CI uploads benchmark baseline/result artifacts for Zig 0.15.2 and 0.16.0. The
 test matrix also runs Zig master, which currently tracks 0.17 development

@@ -3,6 +3,7 @@ const compat = @import("compat");
 const core_serialize = @import("../../core/serialize.zig");
 const kind_mod = @import("../../core/kind.zig");
 const options = @import("../../core/options.zig");
+const reflect = @import("../../reflect.zig");
 
 pub const SerializeError = error{ OutOfMemory, WriteFailed };
 
@@ -352,9 +353,8 @@ fn nullReprString(repr: Options.NullRepr) []const u8 {
 }
 
 fn unionHasPayload(comptime T: type) bool {
-    const info = @typeInfo(T);
-    if (info != .@"union") return false;
-    for (info.@"union".fields) |field| {
+    if (@typeInfo(T) != .@"union") return false;
+    for (reflect.unionFields(T)) |field| {
         if (field.type != void) return true;
     }
     return false;

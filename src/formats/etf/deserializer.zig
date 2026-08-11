@@ -1,6 +1,7 @@
 const std = @import("std");
 const compat = @import("compat");
 const core_deserialize = @import("../../core/deserialize.zig");
+const reflect = @import("../../reflect.zig");
 const codec = @import("codec.zig");
 
 const Allocator = std.mem.Allocator;
@@ -101,19 +102,18 @@ pub const Deserializer = struct {
     pub fn deserializeEnum(self: *Deserializer, comptime T: type) Error!T {
         var buffer: [atom_buffer_len]u8 = undefined;
         const name = try self.readNameView(&buffer);
-        inline for (@typeInfo(T).@"enum".fields) |field| {
+        inline for (reflect.enumFields(T)) |field| {
             if (std.mem.eql(u8, name, field.name)) return @enumFromInt(field.value);
         }
         return error.WrongType;
     }
 
     pub fn deserializeUnion(self: *Deserializer, comptime T: type, allocator: Allocator) Error!T {
-        const info = @typeInfo(T).@"union";
         var buffer: [atom_buffer_len]u8 = undefined;
         {
             const saved = self.*;
             if (self.readNameView(&buffer)) |name| {
-                inline for (info.fields) |field| {
+                inline for (reflect.unionFields(T)) |field| {
                     if (field.type == void and std.mem.eql(u8, name, field.name))
                         return @unionInit(T, field.name, {});
                 }
@@ -127,7 +127,7 @@ pub const Deserializer = struct {
         try self.enterContainer();
         defer self.depth -= 1;
         const name = try self.readNameView(&buffer);
-        inline for (info.fields) |field| {
+        inline for (reflect.unionFields(T)) |field| {
             if (std.mem.eql(u8, name, field.name)) {
                 if (field.type == void) {
                     try self.skipValue();

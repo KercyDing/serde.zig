@@ -1,5 +1,6 @@
 const std = @import("std");
 const core_deserialize = @import("../../core/deserialize.zig");
+const reflect = @import("../../reflect.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -117,7 +118,7 @@ pub const Deserializer = struct {
             self.pos += 1;
             const name = self.readIdentifier();
             if (name.len == 0) return error.UnexpectedToken;
-            inline for (@typeInfo(T).@"enum".fields) |field| {
+            inline for (reflect.enumFields(T)) |field| {
                 if (std.mem.eql(u8, name, field.name))
                     return @enumFromInt(field.value);
             }
@@ -129,7 +130,7 @@ pub const Deserializer = struct {
             self.pos += 1;
             const raw = self.readUntil('"') orelse return error.UnexpectedEof;
             self.pos += 1; // skip closing quote
-            inline for (@typeInfo(T).@"enum".fields) |field| {
+            inline for (reflect.enumFields(T)) |field| {
                 if (std.mem.eql(u8, raw, field.name))
                     return @enumFromInt(field.value);
             }

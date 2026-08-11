@@ -3,6 +3,7 @@ const compat = @import("compat");
 const core_serialize = @import("../../core/serialize.zig");
 const kind_mod = @import("../../core/kind.zig");
 const options = @import("../../core/options.zig");
+const reflect = @import("../../reflect.zig");
 
 const Allocator = std.mem.Allocator;
 const Kind = kind_mod.Kind;
@@ -390,9 +391,8 @@ pub const ArraySerializer = struct {
 };
 
 fn unionHasPayload(comptime T: type) bool {
-    const info = @typeInfo(T);
-    if (info != .@"union") return false;
-    for (info.@"union".fields) |field| {
+    if (@typeInfo(T) != .@"union") return false;
+    for (reflect.unionFields(T)) |field| {
         if (field.type != void) return true;
     }
     return false;

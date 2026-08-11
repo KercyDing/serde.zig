@@ -3,6 +3,7 @@ const compat = @import("compat");
 const scanner_mod = @import("scanner.zig");
 const core_deserialize = @import("../../core/deserialize.zig");
 const kind_mod = @import("../../core/kind.zig");
+const reflect = @import("../../reflect.zig");
 
 const Scanner = scanner_mod.Scanner;
 const Field = scanner_mod.Field;
@@ -170,7 +171,7 @@ fn parseField(comptime T: type, field: Field, allocator: Allocator) DeserializeE
                 const int_val = std.fmt.parseInt(tag_type, trimmed, 10) catch return error.InvalidNumber;
                 return compat.intToEnum(T, int_val) orelse return error.UnexpectedToken;
             }
-            inline for (@typeInfo(T).@"enum".fields) |f| {
+            inline for (reflect.enumFields(T)) |f| {
                 if (std.mem.eql(u8, trimmed, f.name))
                     return @enumFromInt(f.value);
             }

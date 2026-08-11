@@ -47,7 +47,7 @@ fn classifyPointer(comptime p: std.builtin.Type.Pointer) Kind {
         return .slice;
     }
     // Sentinel-terminated pointer to u8 → string.
-    if (p.size == .many and p.child == u8 and p.sentinel != null)
+    if (p.size == .many and p.child == u8 and p.sentinel() != null)
         return .string;
     if (p.size == .one)
         return .pointer;
@@ -127,6 +127,8 @@ test "string kinds" {
     try testing.expectEqual(.string, comptime typeKind([]const u8));
     try testing.expectEqual(.string, comptime typeKind([]u8));
     try testing.expectEqual(.string, comptime typeKind([:0]const u8));
+    // Sentinel-terminated many-pointer, e.g. a C string literal's type.
+    try testing.expectEqual(.string, comptime typeKind([*:0]const u8));
 }
 
 test "container kinds" {

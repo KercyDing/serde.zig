@@ -2,6 +2,7 @@ const std = @import("std");
 const compat = @import("compat");
 const parser_mod = @import("parser.zig");
 const core_deserialize = @import("../../core/deserialize.zig");
+const reflect = @import("../../reflect.zig");
 
 const Allocator = std.mem.Allocator;
 const Value = parser_mod.Value;
@@ -176,7 +177,7 @@ fn deserializeValue(comptime T: type, val: *const Value, allocator: Allocator) D
                 return compat.intToEnum(T, int_val) orelse return error.UnexpectedToken;
             }
             if (val.* != .string) return error.WrongType;
-            inline for (@typeInfo(T).@"enum".fields) |field| {
+            inline for (reflect.enumFields(T)) |field| {
                 if (std.mem.eql(u8, val.string, field.name))
                     return @enumFromInt(field.value);
             }
@@ -235,11 +236,9 @@ fn deserializeValue(comptime T: type, val: *const Value, allocator: Allocator) D
 }
 
 fn deserializeUnionFromValue(val: *const Value, comptime T: type, allocator: Allocator) DeserializeError!T {
-    const info = @typeInfo(T).@"union";
-
     // Void variants from string.
     if (val.* == .string) {
-        inline for (info.fields) |field| {
+        inline for (reflect.unionFields(T)) |field| {
             if (field.type == void and std.mem.eql(u8, val.string, field.name)) {
                 return @unionInit(T, field.name, {});
             }
@@ -256,14 +255,12 @@ fn deserializeUnionFromValue(val: *const Value, comptime T: type, allocator: All
 }
 
 fn deserializeUnionFromTable(table: *const Table, comptime T: type, allocator: Allocator) DeserializeError!T {
-    const info = @typeInfo(T).@"union";
-
     if (table.count() != 1) return error.WrongType;
     var it = table.iterator();
     const entry = it.next().?;
     const variant_name = entry.key_ptr.*;
 
-    inline for (info.fields) |field| {
+    inline for (reflect.unionFields(T)) |field| {
         if (std.mem.eql(u8, variant_name, field.name)) {
             if (field.type == void) {
                 return @unionInit(T, field.name, {});
@@ -317,7 +314,7 @@ const ValueDeserializer = struct {
 
     pub fn deserializeEnum(self: *ValueDeserializer, comptime T: type) Error!T {
         if (self.val.* != .string) return error.WrongType;
-        inline for (@typeInfo(T).@"enum".fields) |field| {
+        inline for (reflect.enumFields(T)) |field| {
             if (std.mem.eql(u8, self.val.string, field.name))
                 return @enumFromInt(field.value);
         }

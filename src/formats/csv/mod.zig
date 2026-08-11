@@ -13,6 +13,7 @@ const core_serialize = @import("../../core/serialize.zig");
 const core_deserialize = @import("../../core/deserialize.zig");
 const kind_mod = @import("../../core/kind.zig");
 const options = @import("../../core/options.zig");
+const reflect = @import("../../reflect.zig");
 
 pub const Scanner = scanner_mod.Scanner;
 pub const Dialect = scanner_mod.Dialect;
@@ -162,8 +163,7 @@ pub fn fromReaderSchema(comptime T: type, allocator: std.mem.Allocator, reader: 
 }
 
 fn writeHeaderRowSchema(comptime T: type, ser: *Serializer, comptime schema: anytype) SerializeError!void {
-    const info = @typeInfo(T).@"struct";
-    inline for (info.fields) |field| {
+    inline for (reflect.structFields(T)) |field| {
         if (comptime options.shouldSkipFieldSchema(T, field.name, .serialize, schema)) continue;
         const wire_name = comptime options.wireFieldNameForDir(T, field.name, schema, .serialize);
         try ser.serializeString(wire_name);
@@ -224,8 +224,7 @@ pub fn fromSliceWith(comptime T: type, allocator: std.mem.Allocator, input: []co
 }
 
 fn writeHeaderRow(comptime T: type, ser: *Serializer) SerializeError!void {
-    const info = @typeInfo(T).@"struct";
-    inline for (info.fields) |field| {
+    inline for (reflect.structFields(T)) |field| {
         if (comptime options.shouldSkipField(T, field.name, .serialize)) continue;
         const wire_name = comptime options.wireFieldNameForDir(T, field.name, {}, .serialize);
         try ser.serializeString(wire_name);

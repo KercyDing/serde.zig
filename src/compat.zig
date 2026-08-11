@@ -280,7 +280,9 @@ pub fn zlibDecompress(allocator: std.mem.Allocator, input: []const u8, expected_
     const actual = decompressor.reader.streamRemaining(&sink) catch return error.InvalidCompressedData;
     if (actual != expected_len or decompressor.err != null or source.seek != source.end) return error.InvalidCompressedData;
     const wire_adler = switch (decompressor.container_metadata) {
-        .zlib => |zlib| zlib.adler,
+        // Zig 0.15's Decompress reads the big-endian adler32 footer as
+        // little-endian; swap it back to the on-wire value.
+        .zlib => |zlib| @byteSwap(zlib.adler),
         else => unreachable,
     };
     if (wire_adler != adler32(output[0..expected_len])) return error.InvalidCompressedData;
