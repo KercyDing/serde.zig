@@ -51,6 +51,8 @@ pub const Scanner = struct {
     depth: u32 = 0,
     /// Maximum allowed nesting depth. Default 256.
     max_depth: u32 = 256,
+    /// Whether the last string token contained escape sequences.
+    last_string_has_escape: bool = false,
 
     pub fn next(self: *Scanner) ScanError!Token {
         self.skipWhitespace();
@@ -92,9 +94,11 @@ pub const Scanner = struct {
     pub fn peek(self: *Scanner) ScanError!Token {
         const saved_pos = self.pos;
         const saved_depth = self.depth;
+        const saved_last_string_has_escape = self.last_string_has_escape;
         const tok = try self.next();
         self.pos = saved_pos;
         self.depth = saved_depth;
+        self.last_string_has_escape = saved_last_string_has_escape;
         return tok;
     }
 
@@ -178,15 +182,6 @@ pub const Scanner = struct {
         }
     }
 
-    /// Whether the string at `index` contains escape sequences.
-    /// Used to decide zero-copy vs allocated path.
-    pub fn stringHasEscapes(value: []const u8) bool {
-        for (value) |c| {
-            if (c == '\\') return true;
-        }
-        return false;
-    }
-
     // Internal scanning methods.
 
     fn scanString(self: *Scanner) ScanError![]const u8 {
@@ -194,6 +189,7 @@ pub const Scanner = struct {
         const input = self.input;
         var pos = self.pos + 1; // skip opening quote
         const start = pos;
+        var has_escape = false;
 
         // Fast path: skip plain runs in chunks of four.
         const table = if (self.allow_unescaped_control_chars)
@@ -216,9 +212,11 @@ pub const Scanner = struct {
             if (c == '"') {
                 const result = input[start..pos];
                 self.pos = pos + 1; // skip closing quote
+                self.last_string_has_escape = has_escape;
                 return result;
             }
             if (c == '\\') {
+                has_escape = true;
                 pos += 1; // skip backslash
                 if (pos >= input.len) return error.UnexpectedEof;
                 const esc = input[pos];
@@ -334,7 +332,25 @@ test "scan string with escapes" {
     var s = Scanner{ .input = "\"hello\\nworld\"" };
     const tok = try s.next();
     try testing.expectEqualStrings("hello\\nworld", tok.string);
-    try testing.expect(Scanner.stringHasEscapes(tok.string));
+    try testing.expect(s.last_string_has_escape);
+}
+
+test "scan string without escapes" {
+    var s = Scanner{ .input = "\"hello\"" };
+    const tok = try s.next();
+    try testing.expectEqualStrings("hello", tok.string);
+    try testing.expect(!s.last_string_has_escape);
+}
+
+test "peek restores escape flag" {
+    var s = Scanner{ .input = "\"c\" \"a\\nb\"" };
+    _ = try s.next();
+    try testing.expect(!s.last_string_has_escape);
+    _ = try s.peek();
+    try testing.expect(!s.last_string_has_escape);
+    const tok = try s.next();
+    try testing.expectEqualStrings("a\\nb", tok.string);
+    try testing.expect(s.last_string_has_escape);
 }
 
 test "scan number formats" {

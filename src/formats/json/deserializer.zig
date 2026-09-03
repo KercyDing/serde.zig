@@ -105,7 +105,7 @@ pub const Deserializer = struct {
         const tok = try self.scanner.next();
         switch (tok) {
             .string => |raw| {
-                if (!Scanner.stringHasEscapes(raw)) {
+                if (!self.scanner.last_string_has_escape) {
                     if (self.borrow_strings) return raw;
                     const copy = allocator.alloc(u8, raw.len) catch return error.OutOfMemory;
                     @memcpy(copy, raw);
@@ -128,7 +128,7 @@ pub const Deserializer = struct {
         const tok = try self.scanner.next();
         switch (tok) {
             .string => |raw| {
-                if (Scanner.stringHasEscapes(raw)) {
+                if (self.scanner.last_string_has_escape) {
                     return error.InvalidEscape;
                 }
                 return raw;
@@ -276,7 +276,7 @@ pub const MapAccess = struct {
         switch (key_tok) {
             .string => |raw| {
                 try self.scanner.expectColon();
-                if (Scanner.stringHasEscapes(raw)) {
+                if (self.scanner.last_string_has_escape) {
                     if (self.borrow_strings) return error.InvalidEscape;
                     return try unescapeString(allocator, raw);
                 }
