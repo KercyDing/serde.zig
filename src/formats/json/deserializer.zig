@@ -343,6 +343,8 @@ fn errorFromAny(err: anyerror) DeserializeError {
 fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
+    // Unescaping never grows the string, so raw.len is enough.
+    try out.ensureTotalCapacity(allocator, raw.len);
     var i: usize = 0;
     while (i < raw.len) {
         if (raw[i] == '\\') {
