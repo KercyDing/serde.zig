@@ -1,5 +1,24 @@
 const std = @import("std");
 
+// String scan classes: 1 means "stop the fast run and handle byte by byte".
+// The default table flags `"`, `\`, and control characters; the relaxed one
+// leaves controls alone (allow_unescaped_control_chars).
+const string_char_table = blk: {
+    var table: [256]u8 = undefined;
+    for (&table, 0..) |*entry, byte| {
+        entry.* = if (byte < 0x20 or byte == '"' or byte == '\\') 1 else 0;
+    }
+    break :blk table;
+};
+
+const string_char_table_relaxed = blk: {
+    var table: [256]u8 = undefined;
+    for (&table, 0..) |*entry, byte| {
+        entry.* = if (byte == '"' or byte == '\\') 1 else 0;
+    }
+    break :blk table;
+};
+
 pub const Token = union(enum) {
     object_begin,
     object_end,
@@ -172,33 +191,51 @@ pub const Scanner = struct {
 
     fn scanString(self: *Scanner) ScanError![]const u8 {
         std.debug.assert(self.input[self.pos] == '"');
-        self.pos += 1; // skip opening quote
-        const start = self.pos;
-        while (self.pos < self.input.len) {
-            const c = self.input[self.pos];
+        const input = self.input;
+        var pos = self.pos + 1; // skip opening quote
+        const start = pos;
+
+        // Fast path: skip plain runs in chunks of four.
+        const table = if (self.allow_unescaped_control_chars)
+            &string_char_table_relaxed
+        else
+            &string_char_table;
+
+        while (pos + 4 <= input.len) {
+            const a = input[pos];
+            const b = input[pos + 1];
+            const c = input[pos + 2];
+            const d = input[pos + 3];
+            if ((table[a] | table[b] | table[c] | table[d]) == 0) {
+                pos += 4;
+            } else break;
+        }
+
+        while (pos < input.len) {
+            const c = input[pos];
             if (c == '"') {
-                const result = self.input[start..self.pos];
-                self.pos += 1; // skip closing quote
+                const result = input[start..pos];
+                self.pos = pos + 1; // skip closing quote
                 return result;
             }
             if (c == '\\') {
-                self.pos += 1; // skip backslash
-                if (self.pos >= self.input.len) return error.UnexpectedEof;
-                const esc = self.input[self.pos];
+                pos += 1; // skip backslash
+                if (pos >= input.len) return error.UnexpectedEof;
+                const esc = input[pos];
                 switch (esc) {
                     '"', '\\', '/', 'b', 'f', 'n', 'r', 't' => {
-                        self.pos += 1;
+                        pos += 1;
                     },
                     'u' => {
-                        self.pos += 1;
-                        if (self.pos + 4 > self.input.len) return error.UnexpectedEof;
-                        self.pos += 4;
+                        pos += 1;
+                        if (pos + 4 > input.len) return error.UnexpectedEof;
+                        pos += 4;
                     },
                     else => return error.InvalidEscape,
                 }
             } else {
                 if (c < 0x20 and !self.allow_unescaped_control_chars) return error.InvalidControlCharacter;
-                self.pos += 1;
+                pos += 1;
             }
         }
         return error.UnexpectedEof;
