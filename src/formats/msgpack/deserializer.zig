@@ -177,8 +177,10 @@ pub const Deserializer = struct {
         const tag = try self.readByte();
         const len = readArrayLen(tag, self) catch return error.WrongType;
 
-        // MessagePack carries the exact array length, so allocate once instead
-        // of growing an ArrayList while decoding each element.
+        // MessagePack provides the exact array length, so validate it before
+        // allocating and fill the final slice directly instead of growing an
+        // ArrayList while decoding each element.
+        if (len > self.input.len - self.pos) return error.UnexpectedEof;
         const items = allocator.alloc(Child, len) catch return error.OutOfMemory;
         var initialized: usize = 0;
         errdefer {

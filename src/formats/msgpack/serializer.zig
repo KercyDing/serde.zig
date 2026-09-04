@@ -6,6 +6,22 @@ const Allocator = std.mem.Allocator;
 
 pub const SerializeError = error{ OutOfMemory, WriteFailed };
 
+pub fn toSlice(allocator: Allocator, value: anytype) ![]u8 {
+    var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    var serializer = Serializer.initBackpatch(&aw.writer, allocator);
+    try core_serialize.serialize(@TypeOf(value), value, &serializer, .{});
+    return aw.toOwnedSlice();
+}
+
+pub fn toSliceSchema(allocator: Allocator, value: anytype, comptime schema: anytype) ![]u8 {
+    var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    var serializer = Serializer.initBackpatch(&aw.writer, allocator);
+    try core_serialize.serializeSchema(@TypeOf(value), value, &serializer, schema, .{});
+    return aw.toOwnedSlice();
+}
+
 pub const Serializer = struct {
     out: *compat.Io.Writer,
     allocator: Allocator,
@@ -17,7 +33,7 @@ pub const Serializer = struct {
         return .{ .out = out, .allocator = allocator };
     }
 
-    pub fn initBackpatch(out: *compat.Io.Writer, allocator: Allocator) Serializer {
+    fn initBackpatch(out: *compat.Io.Writer, allocator: Allocator) Serializer {
         return .{ .out = out, .allocator = allocator, .backpatch_containers = true };
     }
 
@@ -142,7 +158,7 @@ pub const StructSerializer = struct {
 
     pub fn end(self: *StructSerializer) Error!void {
         if (self.backpatch) {
-            return finishDirect(self.parent_out, self.start, self.field_count, true);
+            return finishBackpatch(self.parent_out, self.start, self.field_count, true);
         }
         writeMapHeader(self.parent_out, self.field_count) catch {
             self.aw.deinit();
@@ -241,7 +257,7 @@ pub const ArraySerializer = struct {
 
     pub fn end(self: *ArraySerializer) Error!void {
         if (self.backpatch) {
-            return finishDirect(self.parent_out, self.start, self.elem_count, false);
+            return finishBackpatch(self.parent_out, self.start, self.elem_count, false);
         }
         writeArrayHeader(self.parent_out, self.elem_count) catch {
             self.aw.deinit();
@@ -294,10 +310,10 @@ fn writeSint(out: *compat.Io.Writer, v: i64) !void {
     }
 }
 
-fn finishDirect(out: *compat.Io.Writer, start: usize, count: u32, map: bool) !void {
-    const header_len: usize = if (map)
-        if (count <= 15) 1 else if (count <= 0xffff) 3 else 5
-    else if (count <= 15) 1 else if (count <= 0xffff) 3 else 5;
+fn finishBackpatch(out: *compat.Io.Writer, start: usize, count: u32, map: bool) !void {
+    const header_len: usize = if (count <= 15) 1 else if (count <= 0xffff) 3 else 5;
+    if (start > out.end or out.end - start < 5)
+        return error.WriteFailed;
     const payload_start = start + 5;
     const payload_len = out.end - payload_start;
     const shift = 5 - header_len;
