@@ -177,15 +177,23 @@ pub const Deserializer = struct {
         const tag = try self.readByte();
         const len = readArrayLen(tag, self) catch return error.WrongType;
 
-        var items: std.ArrayList(Child) = .empty;
-        errdefer items.deinit(allocator);
-
-        for (0..len) |_| {
-            const elem = try core_deserialize.deserialize(Child, allocator, self, .{});
-            items.append(allocator, elem) catch return error.OutOfMemory;
+        // MessagePack carries the exact array length, so allocate once instead
+        // of growing an ArrayList while decoding each element.
+        const items = allocator.alloc(Child, len) catch return error.OutOfMemory;
+        var initialized: usize = 0;
+        errdefer {
+            for (items[0..initialized]) |elem| {
+                core_deserialize.freeAllocated(Child, elem, allocator);
+            }
+            allocator.free(items);
         }
 
-        return items.toOwnedSlice(allocator) catch return error.OutOfMemory;
+        for (items) |*item| {
+            item.* = try core_deserialize.deserialize(Child, allocator, self, .{});
+            initialized += 1;
+        }
+
+        return items;
     }
 
     pub fn deserializeSeqAccess(self: *Deserializer) Error!SeqAccess {
