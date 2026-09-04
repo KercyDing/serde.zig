@@ -9,11 +9,16 @@ pub const SerializeError = error{ OutOfMemory, WriteFailed };
 pub const Serializer = struct {
     out: *compat.Io.Writer,
     allocator: Allocator,
+    backpatch_containers: bool = false,
 
     pub const Error = SerializeError;
 
     pub fn init(out: *compat.Io.Writer, allocator: Allocator) Serializer {
         return .{ .out = out, .allocator = allocator };
+    }
+
+    pub fn initBackpatch(out: *compat.Io.Writer, allocator: Allocator) Serializer {
+        return .{ .out = out, .allocator = allocator, .backpatch_containers = true };
     }
 
     pub fn serializeBool(self: *Serializer, value: bool) Error!void {
@@ -80,6 +85,11 @@ pub const Serializer = struct {
     }
 
     pub fn beginStruct(self: *Serializer) Error!StructSerializer {
+        if (self.backpatch_containers) {
+            const start = self.out.end;
+            self.out.writeAll(&.{ 0xdf, 0, 0, 0, 0 }) catch return error.WriteFailed;
+            return .{ .parent_out = self.out, .aw = undefined, .allocator = self.allocator, .field_count = 0, .backpatch = true, .start = start };
+        }
         return .{
             .parent_out = self.out,
             .aw = .init(self.allocator),
@@ -89,6 +99,11 @@ pub const Serializer = struct {
     }
 
     pub fn beginArray(self: *Serializer) Error!ArraySerializer {
+        if (self.backpatch_containers) {
+            const start = self.out.end;
+            self.out.writeAll(&.{ 0xdd, 0, 0, 0, 0 }) catch return error.WriteFailed;
+            return .{ .parent_out = self.out, .aw = undefined, .allocator = self.allocator, .elem_count = 0, .backpatch = true, .start = start };
+        }
         return .{
             .parent_out = self.out,
             .aw = .init(self.allocator),
@@ -106,24 +121,29 @@ pub const StructSerializer = struct {
     aw: compat.Io.Writer.Allocating,
     allocator: Allocator,
     field_count: u32,
+    backpatch: bool = false,
+    start: usize = 0,
 
     pub const Error = SerializeError;
 
     pub fn serializeField(self: *StructSerializer, comptime key: []const u8, value: anytype) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeString(key);
         try core_serialize.serialize(@TypeOf(value), value, &child, .{});
         self.field_count += 1;
     }
 
     pub fn serializeEntry(self: *StructSerializer, key: anytype, value: anytype) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try core_serialize.serialize(@TypeOf(key), key, &child, .{});
         try core_serialize.serialize(@TypeOf(value), value, &child, .{});
         self.field_count += 1;
     }
 
     pub fn end(self: *StructSerializer) Error!void {
+        if (self.backpatch) {
+            return finishDirect(self.parent_out, self.start, self.field_count, true);
+        }
         writeMapHeader(self.parent_out, self.field_count) catch {
             self.aw.deinit();
             return error.WriteFailed;
@@ -142,53 +162,60 @@ pub const ArraySerializer = struct {
     aw: compat.Io.Writer.Allocating,
     allocator: Allocator,
     elem_count: u32,
+    backpatch: bool = false,
+    start: usize = 0,
 
     pub const Error = SerializeError;
 
     pub fn serializeBool(self: *ArraySerializer, value: bool) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeBool(value);
         self.elem_count += 1;
     }
 
     pub fn serializeInt(self: *ArraySerializer, value: anytype) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeInt(value);
         self.elem_count += 1;
     }
 
     pub fn serializeFloat(self: *ArraySerializer, value: anytype) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeFloat(value);
         self.elem_count += 1;
     }
 
     pub fn serializeString(self: *ArraySerializer, value: []const u8) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeString(value);
         self.elem_count += 1;
     }
 
     pub fn serializeBytes(self: *ArraySerializer, value: []const u8) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeBytes(value);
         self.elem_count += 1;
     }
 
     pub fn serializeNull(self: *ArraySerializer) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeNull();
         self.elem_count += 1;
     }
 
     pub fn serializeVoid(self: *ArraySerializer) Error!void {
-        var child = Serializer.init(&self.aw.writer, self.allocator);
+        var child = if (self.backpatch) Serializer.initBackpatch(self.parent_out, self.allocator) else Serializer.init(&self.aw.writer, self.allocator);
         try child.serializeVoid();
         self.elem_count += 1;
     }
 
     pub fn beginStruct(self: *ArraySerializer) Error!StructSerializer {
         self.elem_count += 1;
+        if (self.backpatch) {
+            const start = self.parent_out.end;
+            self.parent_out.writeAll(&.{ 0xdf, 0, 0, 0, 0 }) catch return error.WriteFailed;
+            return .{ .parent_out = self.parent_out, .aw = undefined, .allocator = self.allocator, .field_count = 0, .backpatch = true, .start = start };
+        }
         return .{
             .parent_out = &self.aw.writer,
             .aw = .init(self.allocator),
@@ -199,6 +226,11 @@ pub const ArraySerializer = struct {
 
     pub fn beginArray(self: *ArraySerializer) Error!ArraySerializer {
         self.elem_count += 1;
+        if (self.backpatch) {
+            const start = self.parent_out.end;
+            self.parent_out.writeAll(&.{ 0xdd, 0, 0, 0, 0 }) catch return error.WriteFailed;
+            return .{ .parent_out = self.parent_out, .aw = undefined, .allocator = self.allocator, .elem_count = 0, .backpatch = true, .start = start };
+        }
         return .{
             .parent_out = &self.aw.writer,
             .aw = .init(self.allocator),
@@ -208,6 +240,9 @@ pub const ArraySerializer = struct {
     }
 
     pub fn end(self: *ArraySerializer) Error!void {
+        if (self.backpatch) {
+            return finishDirect(self.parent_out, self.start, self.elem_count, false);
+        }
         writeArrayHeader(self.parent_out, self.elem_count) catch {
             self.aw.deinit();
             return error.WriteFailed;
@@ -256,6 +291,45 @@ fn writeSint(out: *compat.Io.Writer, v: i64) !void {
     } else {
         try out.writeByte(0xd3);
         try out.writeAll(&toBE(u64, @bitCast(v)));
+    }
+}
+
+fn finishDirect(out: *compat.Io.Writer, start: usize, count: u32, map: bool) !void {
+    const header_len: usize = if (map)
+        if (count <= 15) 1 else if (count <= 0xffff) 3 else 5
+    else if (count <= 15) 1 else if (count <= 0xffff) 3 else 5;
+    const payload_start = start + 5;
+    const payload_len = out.end - payload_start;
+    const shift = 5 - header_len;
+    if (shift != 0) {
+        std.mem.copyForwards(u8, out.buffer[start + header_len ..][0..payload_len], out.buffer[payload_start..][0..payload_len]);
+        out.end -= shift;
+    }
+    const header = out.buffer[start..][0..header_len];
+    if (map) writeMapHeaderFixed(header, count) else writeArrayHeaderFixed(header, count);
+}
+
+fn writeMapHeaderFixed(out: []u8, count: u32) void {
+    if (count <= 15) {
+        out[0] = @intCast(0x80 | count);
+    } else if (count <= 0xffff) {
+        out[0] = 0xde;
+        std.mem.writeInt(u16, out[1..3], @intCast(count), .big);
+    } else {
+        out[0] = 0xdf;
+        std.mem.writeInt(u32, out[1..5], count, .big);
+    }
+}
+
+fn writeArrayHeaderFixed(out: []u8, count: u32) void {
+    if (count <= 15) {
+        out[0] = @intCast(0x90 | count);
+    } else if (count <= 0xffff) {
+        out[0] = 0xdc;
+        std.mem.writeInt(u16, out[1..3], @intCast(count), .big);
+    } else {
+        out[0] = 0xdd;
+        std.mem.writeInt(u32, out[1..5], count, .big);
     }
 }
 

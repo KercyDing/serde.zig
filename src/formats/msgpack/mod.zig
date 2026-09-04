@@ -16,7 +16,7 @@ pub const Deserializer = deserializer_mod.Deserializer;
 /// Serialize a value to a MessagePack byte slice. Caller owns the returned memory.
 pub fn toSlice(allocator: std.mem.Allocator, value: anytype) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
-    var ser = Serializer.init(&aw.writer, allocator);
+    var ser = Serializer.initBackpatch(&aw.writer, allocator);
     try core_serialize.serialize(@TypeOf(value), value, &ser, .{});
     return aw.toOwnedSlice();
 }
@@ -41,7 +41,7 @@ pub fn toWriter(allocator: std.mem.Allocator, writer: *compat.Io.Writer, value: 
 /// Serialize a value to a MessagePack byte slice with an external schema.
 pub fn toSliceSchema(allocator: std.mem.Allocator, value: anytype, comptime schema: anytype) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
-    var ser = Serializer.init(&aw.writer, allocator);
+    var ser = Serializer.initBackpatch(&aw.writer, allocator);
     try core_serialize.serializeSchema(@TypeOf(value), value, &ser, schema, .{});
     return aw.toOwnedSlice();
 }
