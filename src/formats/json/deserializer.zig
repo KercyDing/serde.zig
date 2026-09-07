@@ -343,22 +343,24 @@ fn errorFromAny(err: anyerror) DeserializeError {
 fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
-    // Unescaping never grows the string, so raw.len is enough.
-    try out.ensureTotalCapacity(allocator, raw.len);
+    // Every escape shrinks: two-byte escapes yield one byte, \uXXXX yields at
+    // most three, and a surrogate pair yields four out of twelve. So raw.len is
+    // an upper bound on the result and the appends below need no capacity check.
+    out.ensureTotalCapacity(allocator, raw.len) catch return error.OutOfMemory;
     var i: usize = 0;
     while (i < raw.len) {
         if (raw[i] == '\\') {
             i += 1;
             if (i >= raw.len) return error.UnexpectedEof;
             switch (raw[i]) {
-                '"' => try appendByte(&out, allocator, '"'),
-                '\\' => try appendByte(&out, allocator, '\\'),
-                '/' => try appendByte(&out, allocator, '/'),
-                'n' => try appendByte(&out, allocator, '\n'),
-                'r' => try appendByte(&out, allocator, '\r'),
-                't' => try appendByte(&out, allocator, '\t'),
-                'b' => try appendByte(&out, allocator, 0x08),
-                'f' => try appendByte(&out, allocator, 0x0c),
+                '"' => out.appendAssumeCapacity('"'),
+                '\\' => out.appendAssumeCapacity('\\'),
+                '/' => out.appendAssumeCapacity('/'),
+                'n' => out.appendAssumeCapacity('\n'),
+                'r' => out.appendAssumeCapacity('\r'),
+                't' => out.appendAssumeCapacity('\t'),
+                'b' => out.appendAssumeCapacity(0x08),
+                'f' => out.appendAssumeCapacity(0x0c),
                 'u' => {
                     i += 1;
                     if (i + 4 > raw.len) return error.UnexpectedEof;
@@ -375,13 +377,13 @@ fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]cons
                         const full: u21 = 0x10000 + (@as(u21, cp - 0xD800) << 10) + (low - 0xDC00);
                         var buf: [4]u8 = undefined;
                         const len = std.unicode.utf8Encode(full, &buf) catch return error.InvalidUnicode;
-                        out.appendSlice(allocator, buf[0..len]) catch return error.OutOfMemory;
+                        out.appendSliceAssumeCapacity(buf[0..len]);
                     } else {
                         if (cp >= 0xDC00 and cp <= 0xDFFF) return error.InvalidUnicode;
                         const cp21: u21 = @intCast(cp);
                         var buf: [4]u8 = undefined;
                         const len = std.unicode.utf8Encode(cp21, &buf) catch return error.InvalidUnicode;
-                        out.appendSlice(allocator, buf[0..len]) catch return error.OutOfMemory;
+                        out.appendSliceAssumeCapacity(buf[0..len]);
                     }
                     continue;
                 },
@@ -389,15 +391,11 @@ fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]cons
             }
             i += 1;
         } else {
-            try appendByte(&out, allocator, raw[i]);
+            out.appendAssumeCapacity(raw[i]);
             i += 1;
         }
     }
     return out.toOwnedSlice(allocator) catch return error.OutOfMemory;
-}
-
-fn appendByte(list: *std.ArrayList(u8), allocator: Allocator, byte: u8) DeserializeError!void {
-    list.append(allocator, byte) catch return error.OutOfMemory;
 }
 
 fn parseHex4(hex: *const [4]u8) ?u16 {
@@ -529,6 +527,15 @@ test "deserialize surrogate pair" {
     const s = try d.deserializeString(testing.allocator);
     defer testing.allocator.free(s);
     try testing.expectEqualStrings("\u{1F600}", s);
+}
+
+test "unescape every form within the reserved capacity" {
+    // Each escape form shrinks, so the reserved raw.len must cover the result.
+    // Debug and ReleaseSafe trip an assert here if that bound ever stops holding.
+    var d = Deserializer.init("\"\\\"\\\\\\/\\n\\r\\t\\b\\f\\u0041\\u00e9\\u20ac\\uD83D\\uDE00plain\"");
+    const s = try d.deserializeString(testing.allocator);
+    defer testing.allocator.free(s);
+    try testing.expectEqualStrings("\"\\/\n\r\t\x08\x0cA\u{e9}\u{20ac}\u{1F600}plain", s);
 }
 
 test "deserialize lone low surrogate is rejected" {
