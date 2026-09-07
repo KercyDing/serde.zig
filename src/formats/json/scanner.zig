@@ -190,6 +190,10 @@ pub const Scanner = struct {
         var pos = self.pos + 1; // skip opening quote
         const start = pos;
         var has_escape = false;
+        // The loops below track the cursor locally, so publish it on the error
+        // paths too: callers reading `pos` after a failure expect it to point at
+        // the offending byte, not back at the opening quote.
+        errdefer self.pos = pos;
 
         // Fast path: skip plain runs in chunks of four.
         const table = if (self.allow_unescaped_control_chars)
@@ -340,6 +344,20 @@ test "scan string without escapes" {
     const tok = try s.next();
     try testing.expectEqualStrings("hello", tok.string);
     try testing.expect(!s.last_string_has_escape);
+}
+
+test "string scan errors leave pos at the offending byte" {
+    var eof = Scanner{ .input = "\"abcdefgh" };
+    try testing.expectError(error.UnexpectedEof, eof.next());
+    try testing.expectEqual(@as(usize, 9), eof.pos);
+
+    var bad_escape = Scanner{ .input = "\"abcdefgh\\q\"" };
+    try testing.expectError(error.InvalidEscape, bad_escape.next());
+    try testing.expectEqual(@as(usize, 10), bad_escape.pos);
+
+    var control = Scanner{ .input = "\"abcdefgh\x01\"" };
+    try testing.expectError(error.InvalidControlCharacter, control.next());
+    try testing.expectEqual(@as(usize, 9), control.pos);
 }
 
 test "peek restores escape flag" {
