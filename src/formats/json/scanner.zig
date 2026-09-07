@@ -51,7 +51,9 @@ pub const Scanner = struct {
     depth: u32 = 0,
     /// Maximum allowed nesting depth. Default 256.
     max_depth: u32 = 256,
-    /// Whether the last string token contained escape sequences.
+    /// Whether the last string token contained escape sequences. Only valid
+    /// immediately after `next()` returned a `.string`; any later scan,
+    /// including one made by `skipValue`, overwrites it. `peek()` restores it.
     last_string_has_escape: bool = false,
 
     pub fn next(self: *Scanner) ScanError!Token {
