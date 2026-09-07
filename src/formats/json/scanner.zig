@@ -1,5 +1,24 @@
 const std = @import("std");
 
+// String scan classes: 1 means "stop the fast run and handle byte by byte".
+// The default table flags `"`, `\`, and control characters; the relaxed one
+// leaves controls alone (allow_unescaped_control_chars).
+const string_char_table = blk: {
+    var table: [256]u8 = undefined;
+    for (&table, 0..) |*entry, byte| {
+        entry.* = if (byte < 0x20 or byte == '"' or byte == '\\') 1 else 0;
+    }
+    break :blk table;
+};
+
+const string_char_table_relaxed = blk: {
+    var table: [256]u8 = undefined;
+    for (&table, 0..) |*entry, byte| {
+        entry.* = if (byte == '"' or byte == '\\') 1 else 0;
+    }
+    break :blk table;
+};
+
 pub const Token = union(enum) {
     object_begin,
     object_end,
@@ -32,6 +51,10 @@ pub const Scanner = struct {
     depth: u32 = 0,
     /// Maximum allowed nesting depth. Default 256.
     max_depth: u32 = 256,
+    /// Whether the last string token contained escape sequences. Only valid
+    /// immediately after `next()` returned a `.string`; any later scan,
+    /// including one made by `skipValue`, overwrites it. `peek()` restores it.
+    last_string_has_escape: bool = false,
 
     pub fn next(self: *Scanner) ScanError!Token {
         self.skipWhitespace();
@@ -73,9 +96,11 @@ pub const Scanner = struct {
     pub fn peek(self: *Scanner) ScanError!Token {
         const saved_pos = self.pos;
         const saved_depth = self.depth;
+        const saved_last_string_has_escape = self.last_string_has_escape;
         const tok = try self.next();
         self.pos = saved_pos;
         self.depth = saved_depth;
+        self.last_string_has_escape = saved_last_string_has_escape;
         return tok;
     }
 
@@ -159,46 +184,62 @@ pub const Scanner = struct {
         }
     }
 
-    /// Whether the string at `index` contains escape sequences.
-    /// Used to decide zero-copy vs allocated path.
-    pub fn stringHasEscapes(value: []const u8) bool {
-        for (value) |c| {
-            if (c == '\\') return true;
-        }
-        return false;
-    }
-
     // Internal scanning methods.
 
     fn scanString(self: *Scanner) ScanError![]const u8 {
         std.debug.assert(self.input[self.pos] == '"');
-        self.pos += 1; // skip opening quote
-        const start = self.pos;
-        while (self.pos < self.input.len) {
-            const c = self.input[self.pos];
+        const input = self.input;
+        var pos = self.pos + 1; // skip opening quote
+        const start = pos;
+        var has_escape = false;
+        // The loops below track the cursor locally, so publish it on the error
+        // paths too: callers reading `pos` after a failure expect it to point at
+        // the offending byte, not back at the opening quote.
+        errdefer self.pos = pos;
+
+        // Fast path: skip plain runs in chunks of four.
+        const table = if (self.allow_unescaped_control_chars)
+            &string_char_table_relaxed
+        else
+            &string_char_table;
+
+        while (pos + 4 <= input.len) {
+            const a = input[pos];
+            const b = input[pos + 1];
+            const c = input[pos + 2];
+            const d = input[pos + 3];
+            if ((table[a] | table[b] | table[c] | table[d]) == 0) {
+                pos += 4;
+            } else break;
+        }
+
+        while (pos < input.len) {
+            const c = input[pos];
             if (c == '"') {
-                const result = self.input[start..self.pos];
-                self.pos += 1; // skip closing quote
+                const result = input[start..pos];
+                self.pos = pos + 1; // skip closing quote
+                self.last_string_has_escape = has_escape;
                 return result;
             }
             if (c == '\\') {
-                self.pos += 1; // skip backslash
-                if (self.pos >= self.input.len) return error.UnexpectedEof;
-                const esc = self.input[self.pos];
+                has_escape = true;
+                pos += 1; // skip backslash
+                if (pos >= input.len) return error.UnexpectedEof;
+                const esc = input[pos];
                 switch (esc) {
                     '"', '\\', '/', 'b', 'f', 'n', 'r', 't' => {
-                        self.pos += 1;
+                        pos += 1;
                     },
                     'u' => {
-                        self.pos += 1;
-                        if (self.pos + 4 > self.input.len) return error.UnexpectedEof;
-                        self.pos += 4;
+                        pos += 1;
+                        if (pos + 4 > input.len) return error.UnexpectedEof;
+                        pos += 4;
                     },
                     else => return error.InvalidEscape,
                 }
             } else {
                 if (c < 0x20 and !self.allow_unescaped_control_chars) return error.InvalidControlCharacter;
-                self.pos += 1;
+                pos += 1;
             }
         }
         return error.UnexpectedEof;
@@ -297,7 +338,39 @@ test "scan string with escapes" {
     var s = Scanner{ .input = "\"hello\\nworld\"" };
     const tok = try s.next();
     try testing.expectEqualStrings("hello\\nworld", tok.string);
-    try testing.expect(Scanner.stringHasEscapes(tok.string));
+    try testing.expect(s.last_string_has_escape);
+}
+
+test "scan string without escapes" {
+    var s = Scanner{ .input = "\"hello\"" };
+    const tok = try s.next();
+    try testing.expectEqualStrings("hello", tok.string);
+    try testing.expect(!s.last_string_has_escape);
+}
+
+test "string scan errors leave pos at the offending byte" {
+    var eof = Scanner{ .input = "\"abcdefgh" };
+    try testing.expectError(error.UnexpectedEof, eof.next());
+    try testing.expectEqual(@as(usize, 9), eof.pos);
+
+    var bad_escape = Scanner{ .input = "\"abcdefgh\\q\"" };
+    try testing.expectError(error.InvalidEscape, bad_escape.next());
+    try testing.expectEqual(@as(usize, 10), bad_escape.pos);
+
+    var control = Scanner{ .input = "\"abcdefgh\x01\"" };
+    try testing.expectError(error.InvalidControlCharacter, control.next());
+    try testing.expectEqual(@as(usize, 9), control.pos);
+}
+
+test "peek restores escape flag" {
+    var s = Scanner{ .input = "\"c\" \"a\\nb\"" };
+    _ = try s.next();
+    try testing.expect(!s.last_string_has_escape);
+    _ = try s.peek();
+    try testing.expect(!s.last_string_has_escape);
+    const tok = try s.next();
+    try testing.expectEqualStrings("a\\nb", tok.string);
+    try testing.expect(s.last_string_has_escape);
 }
 
 test "scan number formats" {

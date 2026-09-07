@@ -58,6 +58,10 @@ const Borrowed = struct {
     body: []const u8,
 };
 
+const StringDocument = struct {
+    text: []const u8,
+};
+
 const flat_value = Flat{ .id = 42, .name = "alice", .active = true, .score = 91.75 };
 const flat_json = "{\"id\":42,\"name\":\"alice\",\"active\":true,\"score\":91.75}";
 
@@ -85,6 +89,51 @@ const command_value = Command{ .write = .{ .key = "feature", .value = "bench" } 
 const command_json = "{\"write\":{\"key\":\"feature\",\"value\":\"bench\"}}";
 const enum_json = "\"green\"";
 const borrowed_json = "{\"id\":99,\"title\":\"zero copy\",\"body\":\"plain string without escapes\"}";
+const long_plain_json = makePlainStringJson(16 * 1024);
+const long_escaped_json = makeEscapedStringJson(8 * 1024);
+const long_sparse_escaped_json = makeSparseEscapedStringJson(128, 128);
+
+fn makePlainStringJson(comptime length: usize) [11 + length]u8 {
+    var input: [11 + length]u8 = undefined;
+    @memcpy(input[0..9], "{\"text\":\"");
+    @memset(input[9 .. 9 + length], 'a');
+    input[9 + length] = '"';
+    input[10 + length] = '}';
+    return input;
+}
+
+fn makeEscapedStringJson(comptime escapes: usize) [11 + escapes * 2]u8 {
+    @setEvalBranchQuota(escapes * 2 + 1_000);
+    var input: [11 + escapes * 2]u8 = undefined;
+    @memcpy(input[0..9], "{\"text\":\"");
+    for (0..escapes) |index| {
+        input[9 + index * 2] = '\\';
+        input[10 + index * 2] = 'n';
+    }
+    input[input.len - 2] = '"';
+    input[input.len - 1] = '}';
+    return input;
+}
+
+/// Prose-shaped input: long plain runs punctuated by the occasional escape,
+/// which is what real documents look like. The all-plain and all-escape cases
+/// above are the two extremes and behave differently from this one.
+fn makeSparseEscapedStringJson(comptime runs: usize, comptime run_length: usize) [11 + runs * (run_length + 2)]u8 {
+    @setEvalBranchQuota(runs * (run_length + 2) + 1_000);
+    var input: [11 + runs * (run_length + 2)]u8 = undefined;
+    @memcpy(input[0..9], "{\"text\":\"");
+    var at: usize = 9;
+    for (0..runs) |_| {
+        @memset(input[at .. at + run_length], 'a');
+        at += run_length;
+        input[at] = '\\';
+        input[at + 1] = 'n';
+        at += 2;
+    }
+    input[input.len - 2] = '"';
+    input[input.len - 1] = '}';
+    return input;
+}
 
 const large_csv =
     "id,name,department,salary,active\n" ++
@@ -481,6 +530,38 @@ fn opJsonBorrowedDeserialize(allocator: Allocator) !usize {
     return borrowed_json.len;
 }
 
+fn opJsonLongPlainDeserialize(allocator: Allocator) !usize {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const value = try serde.json.fromSlice(StringDocument, arena.allocator(), &long_plain_json);
+    std.mem.doNotOptimizeAway(value.text.ptr);
+    return long_plain_json.len;
+}
+
+fn opJsonLongPlainBorrowedDeserialize(allocator: Allocator) !usize {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const value = try serde.json.fromSliceBorrowed(StringDocument, arena.allocator(), &long_plain_json);
+    std.mem.doNotOptimizeAway(value.text.ptr);
+    return long_plain_json.len;
+}
+
+fn opJsonLongEscapedDeserialize(allocator: Allocator) !usize {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const value = try serde.json.fromSlice(StringDocument, arena.allocator(), &long_escaped_json);
+    std.mem.doNotOptimizeAway(value.text.ptr);
+    return long_escaped_json.len;
+}
+
+fn opJsonLongSparseEscapedDeserialize(allocator: Allocator) !usize {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const value = try serde.json.fromSlice(StringDocument, arena.allocator(), &long_sparse_escaped_json);
+    std.mem.doNotOptimizeAway(value.text.ptr);
+    return long_sparse_escaped_json.len;
+}
+
 fn opMsgpackSerialize(allocator: Allocator) !usize {
     const out = try serde.msgpack.toSlice(allocator, nested_value);
     defer allocator.free(out);
@@ -582,6 +663,10 @@ const benchmarks = [_]Benchmark{
     .{ .id = "json.dynamic_value.roundtrip.serde.warm", .format = "json", .case_name = "dynamic_value", .operation = "roundtrip", .implementation = "serde", .mode = .warm, .input_bytes = nested_json.len, .run = opJsonDynamicValue },
     .{ .id = "json.borrowed_strings.deserialize.serde.warm", .format = "json", .case_name = "borrowed_strings", .operation = "deserialize", .implementation = "serde", .mode = .warm, .input_bytes = borrowed_json.len, .key_case = true, .run = opJsonBorrowedDeserialize },
     .{ .id = "json.borrowed_strings.deserialize.serde.cold", .format = "json", .case_name = "borrowed_strings", .operation = "deserialize", .implementation = "serde", .mode = .cold, .input_bytes = borrowed_json.len, .key_case = true, .run = opJsonBorrowedDeserialize },
+    .{ .id = "json.long_plain.deserialize.serde.warm", .format = "json", .case_name = "long_plain", .operation = "deserialize", .implementation = "serde", .mode = .warm, .input_bytes = long_plain_json.len, .key_case = true, .run = opJsonLongPlainDeserialize },
+    .{ .id = "json.long_plain_borrowed.deserialize.serde.warm", .format = "json", .case_name = "long_plain_borrowed", .operation = "deserialize", .implementation = "serde", .mode = .warm, .input_bytes = long_plain_json.len, .key_case = true, .run = opJsonLongPlainBorrowedDeserialize },
+    .{ .id = "json.long_escaped.deserialize.serde.warm", .format = "json", .case_name = "long_escaped", .operation = "deserialize", .implementation = "serde", .mode = .warm, .input_bytes = long_escaped_json.len, .key_case = true, .run = opJsonLongEscapedDeserialize },
+    .{ .id = "json.long_sparse_escaped.deserialize.serde.warm", .format = "json", .case_name = "long_sparse_escaped", .operation = "deserialize", .implementation = "serde", .mode = .warm, .input_bytes = long_sparse_escaped_json.len, .key_case = true, .run = opJsonLongSparseEscapedDeserialize },
 
     .{ .id = "msgpack.nested.serialize.serde.warm", .format = "msgpack", .case_name = "nested_struct", .operation = "serialize", .implementation = "serde", .mode = .warm, .input_bytes = nested_json.len, .key_case = true, .run = opMsgpackSerialize },
     .{ .id = "msgpack.nested.serialize.serde.cold", .format = "msgpack", .case_name = "nested_struct", .operation = "serialize", .implementation = "serde", .mode = .cold, .input_bytes = nested_json.len, .key_case = true, .run = opMsgpackSerialize },
