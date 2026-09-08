@@ -215,6 +215,39 @@ test "roundtrip nested struct" {
     try testing.expectEqual(@as(i32, 42), val.inner.val);
 }
 
+test "known-length nested containers" {
+    const Entry = struct {
+        name: []const u8,
+        values: []const u16,
+    };
+    const Document = struct {
+        entries: []const Entry,
+    };
+    const document = Document{ .entries = &.{
+        .{ .name = "first", .values = &.{ 1, 2, 3 } },
+        .{ .name = "second", .values = &.{ 4, 5 } },
+    } };
+
+    const bytes = try toSlice(testing.allocator, document);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{
+        0x81, 0xa7, 'e',  'n',  't',  'r', 'i',  'e',  's',
+        0x92, 0x82, 0xa4, 'n',  'a',  'm', 'e',  0xa5, 'f',
+        'i',  'r',  's',  't',  0xa6, 'v', 'a',  'l',  'u',
+        'e',  's',  0x93, 1,    2,    3,   0x82, 0xa4, 'n',
+        'a',  'm',  'e',  0xa6, 's',  'e', 'c',  'o',  'n',
+        'd',  0xa6, 'v',  'a',  'l',  'u', 'e',  's',  0x92,
+        4,    5,
+    }, bytes);
+}
+
+test "known-length array16" {
+    const values = [_]u8{0} ** 16;
+    const bytes = try toSlice(testing.allocator, values);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 0xdc, 0, 16 }, bytes[0..3]);
+}
+
 test "roundtrip struct with optional field" {
     const Config = struct {
         name: []const u8,
@@ -705,6 +738,22 @@ test "serialize skip if null" {
 
     // Verify the non-null version is longer (contains the email field).
     try testing.expect(bytes2.len > bytes1.len);
+}
+
+test "skip null map count" {
+    const serde_opts = @import("../../core/options.zig");
+    const Partial = struct {
+        name: []const u8,
+        email: ?[]const u8,
+
+        pub const serde = .{
+            .skip = .{ .email = serde_opts.SkipMode.null },
+        };
+    };
+
+    const bytes = try toSlice(testing.allocator, Partial{ .name = "alice", .email = null });
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 0x81, 0xa4, 'n', 'a', 'm', 'e', 0xa5, 'a', 'l', 'i', 'c', 'e' }, bytes);
 }
 
 test "serialize skip if empty" {

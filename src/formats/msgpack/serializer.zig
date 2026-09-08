@@ -96,6 +96,126 @@ pub const Serializer = struct {
             .elem_count = 0,
         };
     }
+
+    /// Writes a compact header immediately when the caller already knows the
+    /// element count. The generic streaming API remains buffered because its
+    /// final count may depend on runtime decisions.
+    pub fn beginStructLen(self: *Serializer, len: usize) Error!DirectStructSerializer {
+        writeMapHeader(self.out, @intCast(len)) catch return error.WriteFailed;
+        return .{ .out = self.out, .allocator = self.allocator };
+    }
+
+    pub fn beginArrayLen(self: *Serializer, len: usize) Error!DirectArraySerializer {
+        writeArrayHeader(self.out, @intCast(len)) catch return error.WriteFailed;
+        return .{ .out = self.out, .allocator = self.allocator };
+    }
+};
+
+/// A container whose header has already been written. This is deliberately a
+/// separate type so the hot path has no runtime "buffered or direct" branch.
+pub const DirectStructSerializer = struct {
+    out: *compat.Io.Writer,
+    allocator: Allocator,
+
+    pub const Error = SerializeError;
+
+    pub fn serializeField(self: *DirectStructSerializer, comptime key: []const u8, value: anytype) Error!void {
+        var child = Serializer.init(self.out, self.allocator);
+        try child.serializeString(key);
+        try core_serialize.serialize(@TypeOf(value), value, &child, .{});
+    }
+
+    pub fn serializeEntry(self: *DirectStructSerializer, key: anytype, value: anytype) Error!void {
+        var child = Serializer.init(self.out, self.allocator);
+        try core_serialize.serialize(@TypeOf(key), key, &child, .{});
+        try core_serialize.serialize(@TypeOf(value), value, &child, .{});
+    }
+
+    pub fn beginStruct(self: *DirectStructSerializer) Error!StructSerializer {
+        return Serializer.init(self.out, self.allocator).beginStruct();
+    }
+
+    pub fn beginArray(self: *DirectStructSerializer) Error!ArraySerializer {
+        return Serializer.init(self.out, self.allocator).beginArray();
+    }
+
+    pub fn beginStructLen(self: *DirectStructSerializer, len: usize) Error!DirectStructSerializer {
+        return Serializer.init(self.out, self.allocator).beginStructLen(len);
+    }
+
+    pub fn beginArrayLen(self: *DirectStructSerializer, len: usize) Error!DirectArraySerializer {
+        return Serializer.init(self.out, self.allocator).beginArrayLen(len);
+    }
+
+    pub fn end(_: *DirectStructSerializer) Error!void {}
+};
+
+pub const DirectArraySerializer = struct {
+    out: *compat.Io.Writer,
+    allocator: Allocator,
+
+    pub const Error = SerializeError;
+
+    fn child(self: *DirectArraySerializer) Serializer {
+        return Serializer.init(self.out, self.allocator);
+    }
+
+    pub fn serializeBool(self: *DirectArraySerializer, value: bool) Error!void {
+        var serializer = self.child();
+        try serializer.serializeBool(value);
+    }
+
+    pub fn serializeInt(self: *DirectArraySerializer, value: anytype) Error!void {
+        var serializer = self.child();
+        try serializer.serializeInt(value);
+    }
+
+    pub fn serializeFloat(self: *DirectArraySerializer, value: anytype) Error!void {
+        var serializer = self.child();
+        try serializer.serializeFloat(value);
+    }
+
+    pub fn serializeString(self: *DirectArraySerializer, value: []const u8) Error!void {
+        var serializer = self.child();
+        try serializer.serializeString(value);
+    }
+
+    pub fn serializeBytes(self: *DirectArraySerializer, value: []const u8) Error!void {
+        var serializer = self.child();
+        try serializer.serializeBytes(value);
+    }
+
+    pub fn serializeNull(self: *DirectArraySerializer) Error!void {
+        var serializer = self.child();
+        try serializer.serializeNull();
+    }
+
+    pub fn serializeVoid(self: *DirectArraySerializer) Error!void {
+        var serializer = self.child();
+        try serializer.serializeVoid();
+    }
+
+    pub fn beginStruct(self: *DirectArraySerializer) Error!StructSerializer {
+        var serializer = self.child();
+        return serializer.beginStruct();
+    }
+
+    pub fn beginArray(self: *DirectArraySerializer) Error!ArraySerializer {
+        var serializer = self.child();
+        return serializer.beginArray();
+    }
+
+    pub fn beginStructLen(self: *DirectArraySerializer, len: usize) Error!DirectStructSerializer {
+        var serializer = self.child();
+        return serializer.beginStructLen(len);
+    }
+
+    pub fn beginArrayLen(self: *DirectArraySerializer, len: usize) Error!DirectArraySerializer {
+        var serializer = self.child();
+        return serializer.beginArrayLen(len);
+    }
+
+    pub fn end(_: *DirectArraySerializer) Error!void {}
 };
 
 // Buffers serialized fields, writes map header + buffered data on end().

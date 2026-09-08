@@ -90,7 +90,10 @@ fn serializeOptionalSchema(comptime T: type, value: T, serializer: anytype, comp
 
 fn serializeArraySchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const child = Child(T);
-    var arr = try serializer.beginArray();
+    var arr = if (comptime @hasDecl(@TypeOf(serializer.*), "beginArrayLen"))
+        try serializer.beginArrayLen(value.len)
+    else
+        try serializer.beginArray();
     defer cleanupContainer(&arr);
     for (value) |elem| {
         try serializeSchema(child, elem, &arr, {}, map);
@@ -100,7 +103,10 @@ fn serializeArraySchema(comptime T: type, value: T, serializer: anytype, comptim
 
 fn serializeSliceSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const child = Child(T);
-    var arr = try serializer.beginArray();
+    var arr = if (comptime @hasDecl(@TypeOf(serializer.*), "beginArrayLen"))
+        try serializer.beginArrayLen(value.len)
+    else
+        try serializer.beginArray();
     defer cleanupContainer(&arr);
     for (value) |elem| {
         try serializeSchema(child, elem, &arr, {}, map);
@@ -108,9 +114,34 @@ fn serializeSliceSchema(comptime T: type, value: T, serializer: anytype, comptim
     return arr.end();
 }
 
+fn countStructFieldsSchema(comptime T: type, value: T, comptime schema: anytype) usize {
+    var count: usize = 0;
+    inline for (reflect.structFields(T)) |field| {
+        if (comptime options.shouldSkipFieldSchema(T, field.name, .serialize, schema)) continue;
+
+        if (comptime options.isFlattenedFieldSchema(T, field.name, schema)) {
+            if (@typeInfo(field.type) != .@"struct")
+                @compileError("Flatten requires a struct type, got " ++ @typeName(field.type));
+            count += reflect.structFields(field.type).len;
+            continue;
+        }
+
+        const field_value = @field(value, field.name);
+        const skip_null = comptime options.isSkipIfNullSchema(T, field.name, schema) and @typeInfo(field.type) == .optional;
+        const skip_empty = comptime options.isSkipIfEmptySchema(T, field.name, schema) and @typeInfo(field.type) == .pointer;
+        if (!((skip_null and field_value == null) or (skip_empty and field_value.len == 0))) {
+            count += 1;
+        }
+    }
+    return count;
+}
+
 fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, comptime schema: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     _ = map;
-    var ss = try serializer.beginStruct();
+    var ss = if (comptime @hasDecl(@TypeOf(serializer.*), "beginStructLen"))
+        try serializer.beginStructLen(countStructFieldsSchema(T, value, schema))
+    else
+        try serializer.beginStruct();
     defer cleanupContainer(&ss);
 
     inline for (reflect.structFields(T)) |field| {
@@ -155,9 +186,13 @@ fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, compti
 }
 
 fn serializeTupleSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
-    var arr = try serializer.beginArray();
+    const fields = reflect.structFields(T);
+    var arr = if (comptime @hasDecl(@TypeOf(serializer.*), "beginArrayLen"))
+        try serializer.beginArrayLen(fields.len)
+    else
+        try serializer.beginArray();
     defer cleanupContainer(&arr);
-    inline for (reflect.structFields(T)) |field| {
+    inline for (fields) |field| {
         try serializeSchema(field.type, @field(value, field.name), &arr, {}, map);
     }
     return arr.end();
