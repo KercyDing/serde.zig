@@ -242,7 +242,7 @@ test "known-length nested containers" {
 }
 
 test "known-length array16" {
-    const values = [_]u8{0} ** 16;
+    const values: [16]u8 = @splat(0);
     const bytes = try toSlice(testing.allocator, values);
     defer testing.allocator.free(bytes);
     try testing.expectEqualSlices(u8, &.{ 0xdc, 0, 16 }, bytes[0..3]);
