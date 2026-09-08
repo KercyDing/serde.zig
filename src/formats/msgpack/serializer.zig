@@ -4,7 +4,27 @@ const core_serialize = @import("../../core/serialize.zig");
 
 const Allocator = std.mem.Allocator;
 
+/// `LengthOverflow` is returned when a container holds more than `maxInt(u32)`
+/// entries, which MessagePack headers cannot express.
 pub const SerializeError = error{ OutOfMemory, WriteFailed, LengthOverflow };
+
+/// Direct containers are handed an element count up front and cannot recover
+/// if the caller emits a different number, so the count is verified whenever
+/// runtime safety is on. Both the counters and the checks compile out
+/// otherwise.
+const count_check = std.debug.runtime_safety;
+
+const Counter = if (count_check) usize else void;
+
+fn counter(value: usize) Counter {
+    if (count_check) return value;
+    return {};
+}
+
+fn countMismatch(declared: Counter, written: Counter) void {
+    if (count_check and written != declared)
+        std.debug.panic("msgpack container declared {d} entries but wrote {d}", .{ declared, written });
+}
 
 pub const Serializer = struct {
     out: *compat.Io.Writer,
@@ -103,21 +123,24 @@ pub const Serializer = struct {
     pub fn beginStructLen(self: *Serializer, len: usize) Error!DirectStructSerializer {
         if (len > std.math.maxInt(u32)) return error.LengthOverflow;
         writeMapHeader(self.out, @intCast(len)) catch return error.WriteFailed;
-        return .{ .out = self.out, .allocator = self.allocator };
+        return .{ .out = self.out, .allocator = self.allocator, .declared = counter(len) };
     }
 
     pub fn beginArrayLen(self: *Serializer, len: usize) Error!DirectArraySerializer {
         if (len > std.math.maxInt(u32)) return error.LengthOverflow;
         writeArrayHeader(self.out, @intCast(len)) catch return error.WriteFailed;
-        return .{ .out = self.out, .allocator = self.allocator };
+        return .{ .out = self.out, .allocator = self.allocator, .declared = counter(len) };
     }
 };
 
 /// A container whose header has already been written. This is deliberately a
 /// separate type so the hot path has no runtime "buffered or direct" branch.
+/// Mirrors the surface of `StructSerializer`.
 pub const DirectStructSerializer = struct {
     out: *compat.Io.Writer,
     allocator: Allocator,
+    declared: Counter,
+    written: Counter = counter(0),
 
     pub const Error = SerializeError;
 
@@ -125,40 +148,31 @@ pub const DirectStructSerializer = struct {
         var child = Serializer.init(self.out, self.allocator);
         try child.serializeString(key);
         try core_serialize.serialize(@TypeOf(value), value, &child, .{});
+        if (count_check) self.written += 1;
     }
 
     pub fn serializeEntry(self: *DirectStructSerializer, key: anytype, value: anytype) Error!void {
         var child = Serializer.init(self.out, self.allocator);
         try core_serialize.serialize(@TypeOf(key), key, &child, .{});
         try core_serialize.serialize(@TypeOf(value), value, &child, .{});
+        if (count_check) self.written += 1;
     }
 
-    pub fn beginStruct(self: *DirectStructSerializer) Error!StructSerializer {
-        return Serializer.init(self.out, self.allocator).beginStruct();
+    pub fn end(self: *DirectStructSerializer) Error!void {
+        countMismatch(self.declared, self.written);
     }
-
-    pub fn beginArray(self: *DirectStructSerializer) Error!ArraySerializer {
-        return Serializer.init(self.out, self.allocator).beginArray();
-    }
-
-    pub fn beginStructLen(self: *DirectStructSerializer, len: usize) Error!DirectStructSerializer {
-        return Serializer.init(self.out, self.allocator).beginStructLen(len);
-    }
-
-    pub fn beginArrayLen(self: *DirectStructSerializer, len: usize) Error!DirectArraySerializer {
-        return Serializer.init(self.out, self.allocator).beginArrayLen(len);
-    }
-
-    pub fn end(_: *DirectStructSerializer) Error!void {}
 };
 
 pub const DirectArraySerializer = struct {
     out: *compat.Io.Writer,
     allocator: Allocator,
+    declared: Counter,
+    written: Counter = counter(0),
 
     pub const Error = SerializeError;
 
     fn child(self: *DirectArraySerializer) Serializer {
+        if (count_check) self.written += 1;
         return Serializer.init(self.out, self.allocator);
     }
 
@@ -217,7 +231,9 @@ pub const DirectArraySerializer = struct {
         return serializer.beginArrayLen(len);
     }
 
-    pub fn end(_: *DirectArraySerializer) Error!void {}
+    pub fn end(self: *DirectArraySerializer) Error!void {
+        countMismatch(self.declared, self.written);
+    }
 };
 
 // Buffers serialized fields, writes map header + buffered data on end().
@@ -608,6 +624,75 @@ test "serialize bytes empty" {
     const out = aw.toOwnedSlice() catch unreachable;
     defer testing.allocator.free(out);
     try testing.expectEqualSlices(u8, &.{ 0xc4, 0 }, out);
+}
+
+// The buffered containers are no longer reached through the core encoder,
+// which always knows the length of Zig's own aggregates. They stay part of the
+// public interface for custom `zerdeSerialize` implementations, so exercise
+// them directly.
+
+const CustomSeq = struct {
+    items: []const i32,
+
+    pub fn zerdeSerialize(self: @This(), serializer: anytype) !void {
+        var arr = try serializer.beginArray();
+        for (self.items) |v| try arr.serializeInt(v);
+        try arr.end();
+    }
+};
+
+const CustomNested = struct {
+    pub fn zerdeSerialize(_: @This(), serializer: anytype) !void {
+        var arr = try serializer.beginArray();
+        var inner = try arr.beginStruct();
+        try inner.serializeEntry(@as([]const u8, "k"), @as(u8, 1));
+        try inner.end();
+        var deep = try arr.beginArray();
+        try deep.serializeBool(true);
+        try deep.end();
+        try arr.serializeNull();
+        try arr.end();
+    }
+};
+
+test "buffered array serializer via custom serializer" {
+    const out = try serializeToBytes(CustomSeq{ .items = &.{ 1, 2, 3 } });
+    defer testing.allocator.free(out);
+    try testing.expectEqualSlices(u8, &.{ 0x93, 1, 2, 3 }, out);
+}
+
+test "buffered array serializer counts nested containers" {
+    const out = try serializeToBytes(CustomNested{});
+    defer testing.allocator.free(out);
+    try testing.expectEqualSlices(u8, &.{ 0x93, 0x81, 0xa1, 'k', 1, 0x91, 0xc3, 0xc0 }, out);
+}
+
+test "buffered array serializer inside a known-length container" {
+    const Doc = struct { seq: CustomSeq, tail: u8 };
+    const out = try serializeToBytes(Doc{ .seq = .{ .items = &.{ 7, 8 } }, .tail = 9 });
+    defer testing.allocator.free(out);
+    try testing.expectEqualSlices(u8, &.{
+        0x82, 0xa3, 's', 'e', 'q', 0x92, 7, 8,
+        0xa4, 't',  'a', 'i', 'l', 9,
+    }, out);
+}
+
+test "buffered array serializer as a known-length array element" {
+    const out = try serializeToBytes(@as([]const CustomSeq, &.{
+        .{ .items = &.{1} },
+        .{ .items = &.{ 2, 3 } },
+    }));
+    defer testing.allocator.free(out);
+    try testing.expectEqualSlices(u8, &.{ 0x92, 0x91, 1, 0x92, 2, 3 }, out);
+}
+
+test "beginArrayLen rejects counts beyond a u32 header" {
+    if (@sizeOf(usize) <= 4) return error.SkipZigTest;
+    var aw: compat.Io.Writer.Allocating = .init(testing.allocator);
+    defer aw.deinit();
+    var ser = Serializer.init(&aw.writer, testing.allocator);
+    try testing.expectError(error.LengthOverflow, ser.beginArrayLen(@as(usize, std.math.maxInt(u32)) + 1));
+    try testing.expectError(error.LengthOverflow, ser.beginStructLen(@as(usize, std.math.maxInt(u32)) + 1));
 }
 
 test "serialize union with payload" {

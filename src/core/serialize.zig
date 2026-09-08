@@ -1,5 +1,6 @@
 const std = @import("std");
 const kind_mod = @import("kind.zig");
+const interface = @import("interface.zig");
 const options = @import("options.zig");
 const compat = @import("compat");
 const reflect = @import("../reflect.zig");
@@ -80,6 +81,37 @@ fn findOobAdapter(comptime T: type, comptime map: anytype) ?type {
     return null;
 }
 
+fn ErrorPayload(comptime F: type) type {
+    return @typeInfo(@typeInfo(F).@"fn".return_type.?).error_union.payload;
+}
+
+fn ArrayContainer(comptime S: type) type {
+    if (comptime interface.hasKnownLengthContainers(S)) return ErrorPayload(@TypeOf(S.beginArrayLen));
+    return ErrorPayload(@TypeOf(S.beginArray));
+}
+
+fn StructContainer(comptime S: type) type {
+    if (comptime interface.hasKnownLengthContainers(S)) return ErrorPayload(@TypeOf(S.beginStructLen));
+    return ErrorPayload(@TypeOf(S.beginStruct));
+}
+
+/// Opens an array container, handing `len` to serializers that implement the
+/// optional length-aware API so length-prefixed formats can emit the header
+/// before the payload. The caller must then emit exactly `len` elements.
+/// See `hasKnownLengthContainers` in interface.zig.
+inline fn beginArrayN(serializer: anytype, len: usize) @TypeOf(serializer.*).Error!ArrayContainer(@TypeOf(serializer.*)) {
+    if (comptime interface.hasKnownLengthContainers(@TypeOf(serializer.*)))
+        return serializer.beginArrayLen(len);
+    return serializer.beginArray();
+}
+
+/// Struct counterpart of `beginArrayN`. The caller must emit exactly `len` fields.
+inline fn beginStructN(serializer: anytype, len: usize) @TypeOf(serializer.*).Error!StructContainer(@TypeOf(serializer.*)) {
+    if (comptime interface.hasKnownLengthContainers(@TypeOf(serializer.*)))
+        return serializer.beginStructLen(len);
+    return serializer.beginStruct();
+}
+
 fn serializeOptionalSchema(comptime T: type, value: T, serializer: anytype, comptime schema: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     if (value) |v| {
         return serializeSchema(Child(T), v, serializer, schema, map);
@@ -90,10 +122,7 @@ fn serializeOptionalSchema(comptime T: type, value: T, serializer: anytype, comp
 
 fn serializeArraySchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const child = Child(T);
-    var arr = if (comptime @hasDecl(@TypeOf(serializer.*), "beginArrayLen"))
-        try serializer.beginArrayLen(value.len)
-    else
-        try serializer.beginArray();
+    var arr = try beginArrayN(serializer, value.len);
     defer cleanupContainer(&arr);
     for (value) |elem| {
         try serializeSchema(child, elem, &arr, {}, map);
@@ -103,10 +132,7 @@ fn serializeArraySchema(comptime T: type, value: T, serializer: anytype, comptim
 
 fn serializeSliceSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const child = Child(T);
-    var arr = if (comptime @hasDecl(@TypeOf(serializer.*), "beginArrayLen"))
-        try serializer.beginArrayLen(value.len)
-    else
-        try serializer.beginArray();
+    var arr = try beginArrayN(serializer, value.len);
     defer cleanupContainer(&arr);
     for (value) |elem| {
         try serializeSchema(child, elem, &arr, {}, map);
@@ -114,6 +140,12 @@ fn serializeSliceSchema(comptime T: type, value: T, serializer: anytype, comptim
     return arr.end();
 }
 
+/// Number of fields `serializeStructSchema` will emit for `value`.
+///
+/// This must stay in lockstep with the emit loop below: the count is written
+/// into the container header before any field is serialized, so a mismatch
+/// silently produces a malformed document. Any new skip or flatten rule has to
+/// be mirrored in both places.
 fn countStructFieldsSchema(comptime T: type, value: T, comptime schema: anytype) usize {
     var count: usize = 0;
     inline for (reflect.structFields(T)) |field| {
@@ -138,10 +170,7 @@ fn countStructFieldsSchema(comptime T: type, value: T, comptime schema: anytype)
 
 fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, comptime schema: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     _ = map;
-    var ss = if (comptime @hasDecl(@TypeOf(serializer.*), "beginStructLen"))
-        try serializer.beginStructLen(countStructFieldsSchema(T, value, schema))
-    else
-        try serializer.beginStruct();
+    var ss = try beginStructN(serializer, countStructFieldsSchema(T, value, schema));
     defer cleanupContainer(&ss);
 
     inline for (reflect.structFields(T)) |field| {
@@ -187,10 +216,7 @@ fn serializeStructSchema(comptime T: type, value: T, serializer: anytype, compti
 
 fn serializeTupleSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const fields = reflect.structFields(T);
-    var arr = if (comptime @hasDecl(@TypeOf(serializer.*), "beginArrayLen"))
-        try serializer.beginArrayLen(fields.len)
-    else
-        try serializer.beginArray();
+    var arr = try beginArrayN(serializer, fields.len);
     defer cleanupContainer(&arr);
     inline for (fields) |field| {
         try serializeSchema(field.type, @field(value, field.name), &arr, {}, map);
@@ -220,7 +246,7 @@ fn serializeUnionExternalSchema(comptime T: type, value: T, serializer: anytype,
                 return serializer.serializeString(wire_name);
             } else {
                 const payload = @field(value, field.name);
-                var ss = try serializer.beginStruct();
+                var ss = try beginStructN(serializer, 1);
                 defer cleanupContainer(&ss);
                 try ss.serializeField(wire_name, payload);
                 return ss.end();
@@ -234,14 +260,15 @@ fn serializeUnionInternalSchema(comptime T: type, value: T, serializer: anytype,
     inline for (reflect.unionFields(T)) |field| {
         if (value == @field(T, field.name)) {
             const wire_name = comptime options.wireFieldNameForDir(T, field.name, schema, .serialize);
-            var ss = try serializer.beginStruct();
+            if (comptime field.type != void and @typeInfo(field.type) != .@"struct")
+                @compileError("Internal tagging requires struct payloads, got " ++ @typeName(field.type));
+            const payload_fields = comptime if (field.type == void) 0 else reflect.structFields(field.type).len;
+            var ss = try beginStructN(serializer, 1 + payload_fields);
             defer cleanupContainer(&ss);
             try ss.serializeField(tag_field_name, @as([]const u8, wire_name));
             if (field.type == void) {
                 return ss.end();
             } else {
-                if (@typeInfo(field.type) != .@"struct")
-                    @compileError("Internal tagging requires struct payloads, got " ++ @typeName(field.type));
                 const payload = @field(value, field.name);
                 inline for (reflect.structFields(field.type)) |sf| {
                     try ss.serializeField(sf.name, @field(payload, sf.name));
@@ -258,7 +285,7 @@ fn serializeUnionAdjacentSchema(comptime T: type, value: T, serializer: anytype,
     inline for (reflect.unionFields(T)) |field| {
         if (value == @field(T, field.name)) {
             const wire_name = comptime options.wireFieldNameForDir(T, field.name, schema, .serialize);
-            var ss = try serializer.beginStruct();
+            var ss = try beginStructN(serializer, if (field.type == void) 1 else 2);
             defer cleanupContainer(&ss);
             try ss.serializeField(tag_field_name, @as([]const u8, wire_name));
             if (field.type != void) {
@@ -299,7 +326,12 @@ fn serializeEnumSchema(comptime T: type, value: T, serializer: anytype, comptime
 
 fn serializeMapSchema(comptime T: type, value: T, serializer: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     _ = map;
-    var ss = try serializer.beginStruct();
+    // Map-like types are duck-typed on getOrPut + iterator, so `count` is not
+    // guaranteed; fall back to the counting container when it is missing.
+    var ss = if (comptime @hasDecl(T, "count"))
+        try beginStructN(serializer, value.count())
+    else
+        try serializer.beginStruct();
     defer cleanupContainer(&ss);
     var it = value.iterator();
     while (it.next()) |entry| {
