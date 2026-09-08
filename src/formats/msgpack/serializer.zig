@@ -4,7 +4,7 @@ const core_serialize = @import("../../core/serialize.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const SerializeError = error{ OutOfMemory, WriteFailed };
+pub const SerializeError = error{ OutOfMemory, WriteFailed, LengthOverflow };
 
 pub const Serializer = struct {
     out: *compat.Io.Writer,
@@ -101,11 +101,13 @@ pub const Serializer = struct {
     /// element count. The generic streaming API remains buffered because its
     /// final count may depend on runtime decisions.
     pub fn beginStructLen(self: *Serializer, len: usize) Error!DirectStructSerializer {
+        if (len > std.math.maxInt(u32)) return error.LengthOverflow;
         writeMapHeader(self.out, @intCast(len)) catch return error.WriteFailed;
         return .{ .out = self.out, .allocator = self.allocator };
     }
 
     pub fn beginArrayLen(self: *Serializer, len: usize) Error!DirectArraySerializer {
+        if (len > std.math.maxInt(u32)) return error.LengthOverflow;
         writeArrayHeader(self.out, @intCast(len)) catch return error.WriteFailed;
         return .{ .out = self.out, .allocator = self.allocator };
     }
