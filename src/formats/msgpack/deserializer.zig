@@ -366,84 +366,47 @@ fn readIntValue(d: *Deserializer, tag: u8) DeserializeError!i64 {
     };
 }
 
-// Skip a single msgpack value by tag. Used for unknown struct fields.
-fn skipByTag(d: *Deserializer, tag: u8) DeserializeError!void {
-    // nil, false, true
-    if (tag == 0xc0 or tag == 0xc2 or tag == 0xc3) return;
+// Skip a single msgpack value by tag. Containers add their children to a
+// pending count instead of recursing, keeping deeply nested unknown values off
+// the call stack.
+fn skipByTag(d: *Deserializer, first_tag: u8) DeserializeError!void {
+    var remaining: usize = 1;
+    var tag = first_tag;
+    while (remaining > 0) {
+        remaining -= 1;
 
-    // Positive fixint, negative fixint
-    if (tag <= 0x7f or tag >= 0xe0) return;
-
-    // Fixed-size numeric types.
-    const skip_sizes = [_]struct { t: u8, s: usize }{
-        .{ .t = 0xcc, .s = 1 },
-        .{ .t = 0xcd, .s = 2 },
-        .{ .t = 0xce, .s = 4 },
-        .{ .t = 0xcf, .s = 8 },
-        .{ .t = 0xd0, .s = 1 },
-        .{ .t = 0xd1, .s = 2 },
-        .{ .t = 0xd2, .s = 4 },
-        .{ .t = 0xd3, .s = 8 },
-        .{ .t = 0xca, .s = 4 },
-        .{ .t = 0xcb, .s = 8 },
-    };
-    for (skip_sizes) |entry| {
-        if (tag == entry.t) {
-            _ = try d.readSlice(entry.s);
-            return;
+        if (tag == 0xc0 or tag == 0xc2 or tag == 0xc3 or tag <= 0x7f or tag >= 0xe0) {
+            // nil, bool, positive fixint, negative fixint
+        } else switch (tag) {
+            0xcc, 0xd0 => _ = try d.readSlice(1),
+            0xcd, 0xd1 => _ = try d.readSlice(2),
+            0xce, 0xd2, 0xca => _ = try d.readSlice(4),
+            0xcf, 0xd3, 0xcb => _ = try d.readSlice(8),
+            0xc4 => _ = try d.readSlice(try d.readByte()),
+            0xc5 => _ = try d.readSlice(try d.readBE(u16)),
+            0xc6 => _ = try d.readSlice(try d.readBE(u32)),
+            0xd9, 0xda, 0xdb => _ = try d.readSlice(try readStrLen(tag, d)),
+            0xdc, 0xdd => remaining +|= try readArrayLen(tag, d),
+            0xde, 0xdf => {
+                const len = try readMapLen(tag, d);
+                remaining +|= len;
+                remaining +|= len;
+            },
+            else => {
+                if (tag & 0xe0 == 0xa0) {
+                    _ = try d.readSlice(tag & 0x1f);
+                } else if (tag & 0xf0 == 0x90) {
+                    remaining +|= tag & 0x0f;
+                } else if (tag & 0xf0 == 0x80) {
+                    const len: usize = tag & 0x0f;
+                    remaining +|= len;
+                    remaining +|= len;
+                } else return error.UnexpectedTag;
+            },
         }
-    }
 
-    // Strings.
-    if (tag & 0xe0 == 0xa0 or tag == 0xd9 or tag == 0xda or tag == 0xdb) {
-        const len = try readStrLen(tag, d);
-        _ = try d.readSlice(len);
-        return;
+        if (remaining > 0) tag = try d.readByte();
     }
-
-    // Binary.
-    switch (tag) {
-        0xc4 => {
-            const len: usize = try d.readByte();
-            _ = try d.readSlice(len);
-            return;
-        },
-        0xc5 => {
-            const len: usize = try d.readBE(u16);
-            _ = try d.readSlice(len);
-            return;
-        },
-        0xc6 => {
-            const len: usize = try d.readBE(u32);
-            _ = try d.readSlice(len);
-            return;
-        },
-        else => {},
-    }
-
-    // Arrays.
-    if (tag & 0xf0 == 0x90 or tag == 0xdc or tag == 0xdd) {
-        const len = try readArrayLen(tag, d);
-        for (0..len) |_| {
-            const inner = try d.readByte();
-            try skipByTag(d, inner);
-        }
-        return;
-    }
-
-    // Maps.
-    if (tag & 0xf0 == 0x80 or tag == 0xde or tag == 0xdf) {
-        const len = try readMapLen(tag, d);
-        for (0..len) |_| {
-            const k = try d.readByte();
-            try skipByTag(d, k);
-            const v = try d.readByte();
-            try skipByTag(d, v);
-        }
-        return;
-    }
-
-    return error.UnexpectedTag;
 }
 
 fn errorFromAny(err: anyerror) DeserializeError {
@@ -593,4 +556,17 @@ test "deserialize unexpected eof" {
 test "deserialize overflow" {
     var d = Deserializer.init(&.{ 0xcd, 0x01, 0x00 }); // 256 as uint16
     try testing.expectError(error.Overflow, d.deserializeInt(u8));
+}
+
+test "skip deeply nested arrays" {
+    const depth = 100_000;
+    const input = try testing.allocator.alloc(u8, depth + 1);
+    defer testing.allocator.free(input);
+    @memset(input[0..depth], 0x91);
+    input[depth] = 0;
+
+    var d = Deserializer.init(input);
+    const tag = try d.readByte();
+    try skipByTag(&d, tag);
+    try testing.expectEqual(input.len, d.pos);
 }

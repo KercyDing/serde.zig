@@ -720,6 +720,32 @@ test "deny_unknown_fields" {
     try testing.expectEqual(@as(i32, 10), val.x);
 }
 
+test "skip nested unknown field" {
+    const Document = struct { id: u8 };
+    const bytes = [_]u8{
+        0x82,
+        0xa2,
+        'i',
+        'd',
+        1,
+        0xa5,
+        'e',
+        'x',
+        't',
+        'r',
+        'a',
+        0x91,
+        0x81,
+        0xa1,
+        'x',
+        0x92,
+        2,
+        3,
+    };
+    const value = try fromSlice(Document, testing.allocator, &bytes);
+    try testing.expectEqual(@as(u8, 1), value.id);
+}
+
 test "serialize skip if null" {
     const serde_opts = @import("../../core/options.zig");
     const Partial = struct {
