@@ -15,7 +15,11 @@ pub const Deserializer = deserializer_mod.Deserializer;
 
 /// Serialize a value to a MessagePack byte slice. Caller owns the returned memory.
 pub fn toSlice(allocator: std.mem.Allocator, value: anytype) ![]u8 {
-    return serializer_mod.toSlice(allocator, value);
+    var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    var ser = Serializer.init(&aw.writer, allocator);
+    try core_serialize.serialize(@TypeOf(value), value, &ser, .{});
+    return aw.toOwnedSlice();
 }
 
 /// Serialize a value to a null-terminated MessagePack byte slice. Caller owns the returned memory.
@@ -28,6 +32,11 @@ pub fn toSliceAlloc(allocator: std.mem.Allocator, value: anytype) ![:0]u8 {
 }
 
 /// Serialize a value to a writer in MessagePack format.
+///
+/// Containers whose length is known up front are streamed straight to `writer`
+/// rather than staged in memory, so a serialization error can leave a partially
+/// written value behind. Write into a buffer first if the sink must only ever
+/// see complete documents.
 pub fn toWriter(allocator: std.mem.Allocator, writer: *compat.Io.Writer, value: anytype) !void {
     var ser = Serializer.init(writer, allocator);
     try core_serialize.serialize(@TypeOf(value), value, &ser, .{});
@@ -37,10 +46,15 @@ pub fn toWriter(allocator: std.mem.Allocator, writer: *compat.Io.Writer, value: 
 
 /// Serialize a value to a MessagePack byte slice with an external schema.
 pub fn toSliceSchema(allocator: std.mem.Allocator, value: anytype, comptime schema: anytype) ![]u8 {
-    return serializer_mod.toSliceSchema(allocator, value, schema);
+    var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    var ser = Serializer.init(&aw.writer, allocator);
+    try core_serialize.serializeSchema(@TypeOf(value), value, &ser, schema, .{});
+    return aw.toOwnedSlice();
 }
 
 /// Serialize a value to a writer in MessagePack format with an external schema.
+/// Streams like `toWriter`, with the same partial-write caveat.
 pub fn toWriterSchema(allocator: std.mem.Allocator, writer: *compat.Io.Writer, value: anytype, comptime schema: anytype) !void {
     var ser = Serializer.init(writer, allocator);
     try core_serialize.serializeSchema(@TypeOf(value), value, &ser, schema, .{});
@@ -209,6 +223,60 @@ test "roundtrip nested struct" {
     try testing.expectEqual(@as(i32, 42), val.inner.val);
 }
 
+test "known-length nested containers" {
+    const Entry = struct {
+        name: []const u8,
+        values: []const u16,
+    };
+    const Document = struct {
+        entries: []const Entry,
+    };
+    const document = Document{ .entries = &.{
+        .{ .name = "first", .values = &.{ 1, 2, 3 } },
+        .{ .name = "second", .values = &.{ 4, 5 } },
+    } };
+
+    const bytes = try toSlice(testing.allocator, document);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{
+        0x81, 0xa7, 'e',  'n',  't',  'r', 'i',  'e',  's',
+        0x92, 0x82, 0xa4, 'n',  'a',  'm', 'e',  0xa5, 'f',
+        'i',  'r',  's',  't',  0xa6, 'v', 'a',  'l',  'u',
+        'e',  's',  0x93, 1,    2,    3,   0x82, 0xa4, 'n',
+        'a',  'm',  'e',  0xa6, 's',  'e', 'c',  'o',  'n',
+        'd',  0xa6, 'v',  'a',  'l',  'u', 'e',  's',  0x92,
+        4,    5,
+    }, bytes);
+}
+
+test "roundtrip nested containers" {
+    const Entry = struct {
+        name: []const u8,
+        values: []const i32,
+    };
+    const Document = struct {
+        entries: []const Entry,
+    };
+    const document = Document{ .entries = &.{
+        .{ .name = "first", .values = &.{ 1, 2, 3 } },
+        .{ .name = "second", .values = &.{ 4, 5 } },
+    } };
+
+    const bytes = try toSlice(testing.allocator, document);
+    defer testing.allocator.free(bytes);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const decoded = try fromSlice(Document, arena.allocator(), bytes);
+    try testing.expectEqualDeep(document, decoded);
+}
+
+test "known-length array16" {
+    const values: [16]u8 = @splat(0);
+    const bytes = try toSlice(testing.allocator, values);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 0xdc, 0, 16 }, bytes[0..3]);
+}
+
 test "roundtrip struct with optional field" {
     const Config = struct {
         name: []const u8,
@@ -252,27 +320,6 @@ test "roundtrip array" {
     defer testing.allocator.free(bytes);
     const val = try fromSlice([3]i32, testing.allocator, bytes);
     try testing.expectEqual([3]i32{ 10, 20, 30 }, val);
-}
-
-test "roundtrip nested containers" {
-    const Entry = struct {
-        name: []const u8,
-        values: []const i32,
-    };
-    const Document = struct {
-        entries: []const Entry,
-    };
-    const document = Document{ .entries = &.{
-        .{ .name = "first", .values = &.{ 1, 2, 3 } },
-        .{ .name = "second", .values = &.{ 4, 5 } },
-    } };
-
-    const bytes = try toSlice(testing.allocator, document);
-    defer testing.allocator.free(bytes);
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const decoded = try fromSlice(Document, arena.allocator(), bytes);
-    try testing.expectEqualDeep(document, decoded);
 }
 
 test "roundtrip enum" {
@@ -472,6 +519,61 @@ test "fromReader" {
     var reader: compat.Io.Reader = .fixed(bytes);
     const val = try fromReader(i32, testing.allocator, &reader);
     try testing.expectEqual(@as(i32, 42), val);
+}
+
+test "known-length union headers" {
+    const opts = @import("../../core/options.zig");
+
+    const External = union(enum) { ping: void, set: i32 };
+    const ext = try toSlice(testing.allocator, External{ .set = 5 });
+    defer testing.allocator.free(ext);
+    try testing.expectEqualSlices(u8, &.{ 0x81, 0xa3, 's', 'e', 't', 5 }, ext);
+
+    const Internal = union(enum) {
+        ping: void,
+        pair: struct { a: u8, b: u8 },
+
+        pub const serde = .{ .tag = opts.UnionTag.internal, .tag_field = "type" };
+    };
+    const internal_ping: Internal = .ping;
+    const int_void = try toSlice(testing.allocator, internal_ping);
+    defer testing.allocator.free(int_void);
+    try testing.expectEqualSlices(u8, &.{ 0x81, 0xa4, 't', 'y', 'p', 'e', 0xa4, 'p', 'i', 'n', 'g' }, int_void);
+
+    const int_pair = try toSlice(testing.allocator, Internal{ .pair = .{ .a = 1, .b = 2 } });
+    defer testing.allocator.free(int_pair);
+    try testing.expectEqual(@as(u8, 0x83), int_pair[0]);
+
+    const Adjacent = union(enum) {
+        ping: void,
+        data: i32,
+
+        pub const serde = .{ .tag = opts.UnionTag.adjacent, .tag_field = "t", .content_field = "c" };
+    };
+    const adjacent_ping: Adjacent = .ping;
+    const adj_void = try toSlice(testing.allocator, adjacent_ping);
+    defer testing.allocator.free(adj_void);
+    try testing.expectEqualSlices(u8, &.{ 0x81, 0xa1, 't', 0xa4, 'p', 'i', 'n', 'g' }, adj_void);
+
+    const adj_data = try toSlice(testing.allocator, Adjacent{ .data = 42 });
+    defer testing.allocator.free(adj_data);
+    try testing.expectEqualSlices(u8, &.{ 0x82, 0xa1, 't', 0xa4, 'd', 'a', 't', 'a', 0xa1, 'c', 42 }, adj_data);
+}
+
+test "known-length map header" {
+    var map = std.StringHashMap(u8).init(testing.allocator);
+    defer map.deinit();
+    try map.put("k", 1);
+
+    const bytes = try toSlice(testing.allocator, map);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 0x81, 0xa1, 'k', 1 }, bytes);
+
+    var empty = std.StringHashMap(u8).init(testing.allocator);
+    defer empty.deinit();
+    const empty_bytes = try toSlice(testing.allocator, empty);
+    defer testing.allocator.free(empty_bytes);
+    try testing.expectEqualSlices(u8, &.{0x80}, empty_bytes);
 }
 
 test "roundtrip union internal tagging" {
@@ -702,6 +804,32 @@ test "deny_unknown_fields" {
     try testing.expectEqual(@as(i32, 10), val.x);
 }
 
+test "skip nested unknown field" {
+    const Document = struct { id: u8 };
+    const bytes = [_]u8{
+        0x82,
+        0xa2,
+        'i',
+        'd',
+        1,
+        0xa5,
+        'e',
+        'x',
+        't',
+        'r',
+        'a',
+        0x91,
+        0x81,
+        0xa1,
+        'x',
+        0x92,
+        2,
+        3,
+    };
+    const value = try fromSlice(Document, testing.allocator, &bytes);
+    try testing.expectEqual(@as(u8, 1), value.id);
+}
+
 test "serialize skip if null" {
     const serde_opts = @import("../../core/options.zig");
     const Partial = struct {
@@ -720,6 +848,22 @@ test "serialize skip if null" {
 
     // Verify the non-null version is longer (contains the email field).
     try testing.expect(bytes2.len > bytes1.len);
+}
+
+test "skip null map count" {
+    const serde_opts = @import("../../core/options.zig");
+    const Partial = struct {
+        name: []const u8,
+        email: ?[]const u8,
+
+        pub const serde = .{
+            .skip = .{ .email = serde_opts.SkipMode.null },
+        };
+    };
+
+    const bytes = try toSlice(testing.allocator, Partial{ .name = "alice", .email = null });
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 0x81, 0xa4, 'n', 'a', 'm', 'e', 0xa5, 'a', 'l', 'i', 'c', 'e' }, bytes);
 }
 
 test "serialize skip if empty" {
@@ -804,6 +948,13 @@ test "deserialize error: truncated input" {
 test "deserialize error: oversized array length" {
     const input = [_]u8{ 0xdd, 0xff, 0xff, 0xff, 0xff, 0x01 };
     const result = fromSlice([]const i32, testing.allocator, &input);
+    try testing.expectError(error.UnexpectedEof, result);
+}
+
+test "deserialize error: oversized map length" {
+    const Partial = struct { a: i32 };
+    const input = [_]u8{ 0xdf, 0xff, 0xff, 0xff, 0xff };
+    const result = fromSlice(Partial, testing.allocator, &input);
     try testing.expectError(error.UnexpectedEof, result);
 }
 

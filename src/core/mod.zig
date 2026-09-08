@@ -26,6 +26,7 @@ pub const deserializeWith = deserialize_mod.deserializeWith;
 pub const deserializeSchema = deserialize_mod.deserializeSchema;
 
 pub const isSerializer = interface.isSerializer;
+pub const hasKnownLengthContainers = interface.hasKnownLengthContainers;
 pub const isDeserializer = interface.isDeserializer;
 
 pub const NamingConvention = options.NamingConvention;
