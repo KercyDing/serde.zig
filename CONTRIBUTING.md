@@ -74,6 +74,14 @@ Each format lives in `src/formats/<name>/` and must provide:
 
 Both interfaces are verified at comptime by `isSerializer` / `isDeserializer` in `src/core/interface.zig`.
 
+Length-prefixed formats may additionally declare `beginArrayLen` / `beginStructLen`.
+The core calls them instead of `beginArray` / `beginStruct` whenever the element
+count is known up front, so the header can be written before the payload instead
+of buffering it. Declare both or neither, and note the contract: the caller emits
+exactly the declared number of elements, so a serializer should verify the count
+under `std.debug.runtime_safety`. See `hasKnownLengthContainers` in
+`src/core/interface.zig`.
+
 Add the new format to:
 - `src/root.zig` — import and re-export
 - `build.zig` — add fuzz target if applicable
