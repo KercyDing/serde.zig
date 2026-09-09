@@ -387,6 +387,53 @@ fn unionTag(comptime T: type, allocator: Allocator, d: anytype, comptime schema:
     }
     return name orelse d.raiseError(error.MissingField);
 }
+fn WithoutTagMap(comptime A: type, comptime D: type, comptime tag_key: []const u8) type {
+    return struct {
+        base: A,
+        parent: *D,
+        const Self = @This();
+        pub const Error = D.Error;
+        fn access(self: *Self) if (@typeInfo(A) == .pointer) A else *A {
+            if (comptime @typeInfo(A) == .pointer) return self.base;
+            return &self.base;
+        }
+        pub fn nextKey(self: *Self, allocator: Allocator) Error!?[]const u8 {
+            while (try self.access().nextKey(allocator)) |key| {
+                if (!std.mem.eql(u8, key, tag_key)) return key;
+                defer releaseKey(self.access(), key, allocator);
+                try self.access().skipValue();
+            }
+            return null;
+        }
+        pub fn nextValue(self: *Self, comptime T: type, allocator: Allocator) Error!T {
+            return self.access().nextValue(T, allocator);
+        }
+        pub fn skipValue(self: *Self) Error!void {
+            return self.access().skipValue();
+        }
+        pub fn freeKey(self: *Self, key: []const u8, allocator: Allocator) void {
+            releaseKey(self.access(), key, allocator);
+        }
+        pub fn raiseError(self: *Self, err: anyerror) Error {
+            return self.parent.raiseError(err);
+        }
+    };
+}
+const releaseKey = freeKey;
+fn WithoutTagDeserializer(comptime D: type, comptime tag_key: []const u8) type {
+    return struct {
+        parent: *D,
+        const Self = @This();
+        pub const Error = D.Error;
+        pub fn deserializeStruct(self: *Self, comptime T: type) Error!WithoutTagMap(@typeInfo(@TypeOf(@as(*D, undefined).deserializeStruct(T))).error_union.payload, D, tag_key) {
+            return .{ .base = try self.parent.deserializeStruct(T), .parent = self.parent };
+        }
+        pub fn raiseError(self: *Self, err: anyerror) Error {
+            return self.parent.raiseError(err);
+        }
+    };
+}
+
 fn deserializeUnionInternalSchema(comptime T: type, allocator: Allocator, d: anytype, comptime schema: anytype, comptime oob_map: anytype) @TypeOf(d.*).Error!T {
     const saved = d.*;
     const name = try unionTag(T, allocator, d, schema);
@@ -395,6 +442,12 @@ fn deserializeUnionInternalSchema(comptime T: type, allocator: Allocator, d: any
         if (opts.matchesDeserializeName(T, f.name, name, schema)) {
             if (f.type == void) return @unionInit(T, f.name, {});
             d.* = saved;
+            if (comptime opts.hasCustomDeserializer(f.type) or
+                (@TypeOf(oob_map) != void and findOobAdapter(f.type, oob_map) != null))
+            {
+                var filtered = WithoutTagDeserializer(@TypeOf(d.*), opts.getTagFieldSchema(T, schema)){ .parent = d };
+                return @unionInit(T, f.name, try deserializeSchema(f.type, allocator, &filtered, {}, oob_map));
+            }
             var access = try d.deserializeStruct(f.type);
             const payload = try structFromMap(f.type, allocator, &access, {}, oob_map, opts.getTagFieldSchema(T, schema));
             return @unionInit(T, f.name, payload);

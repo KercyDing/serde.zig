@@ -206,8 +206,27 @@ const AdapterContainer = struct {
     map: std.StringHashMap(AdaptedInt),
     tagged: union(enum) { value: AdaptedInt },
 };
+const NestedWireHelper = struct {
+    pub const WireType = struct { value: AdaptedInt };
+    pub fn serialize(value: AdaptedInt) WireType {
+        return .{ .value = value };
+    }
+    pub fn deserialize(value: WireType) AdaptedInt {
+        return value.value;
+    }
+};
 fn adapterPaths(allocator: std.mem.Allocator) !void {
     const adapters = .{.{ AdaptedInt, IntAdapter }};
+    const WithContainer = struct {
+        item: AdaptedInt,
+        pub const serde = .{ .with = .{ .item = NestedWireHelper } };
+    };
+    const with_value = WithContainer{ .item = .{ .n = 7 } };
+    const with_bytes = serde.json.toSliceWithMap(allocator, with_value, adapters) catch |err| return if (err == error.WriteFailed) error.OutOfMemory else err;
+    defer allocator.free(with_bytes);
+    try testing.expectEqualStrings("{\"item\":{\"value\":7}}", with_bytes);
+    const with_parsed = try serde.json.fromSliceWithMap(WithContainer, allocator, with_bytes, adapters);
+    try testing.expectEqual(@as(i32, 7), with_parsed.item.n);
     const input = "{\"field\":1,\"optional\":2,\"array\":[3],\"slice\":[4],\"tuple\":[5,6],\"map\":{\"k\":7},\"tagged\":{\"value\":8}}";
     const value = try serde.json.fromSliceWithMap(AdapterContainer, allocator, input, adapters);
     defer de.freeAllocated(AdapterContainer, value, allocator);
@@ -462,4 +481,58 @@ fn wideRecordPaths(allocator: std.mem.Allocator) !void {
 test "wide field table preserves indices aliases and failure cleanup" {
     try testing.checkAllAllocationFailures(alloc, wideRecordPaths, .{});
     try testing.expectError(error.DuplicateField, serde.json.fromSlice(WideRecord, alloc, "{\"text\":\"first\",\"label\":\"second\"}"));
+}
+
+const ObjectAdapter = struct {
+    const Wire = struct { wire: i32 };
+    pub fn serialize(value: anytype, s: anytype) @TypeOf(s.*).Error!void {
+        return serde.core.serialize(Wire, .{ .wire = value.n }, s, .{});
+    }
+    pub fn deserialize(comptime T: type, allocator: std.mem.Allocator, d: anytype) @TypeOf(d.*).Error!T {
+        const value = try serde.core.deserialize(Wire, allocator, d, .{});
+        return .{ .n = value.wire };
+    }
+};
+const HookPayload = struct {
+    n: i32,
+    pub fn zerdeSerialize(self: @This(), s: anytype) @TypeOf(s.*).Error!void {
+        return ObjectAdapter.serialize(self, s);
+    }
+    pub fn zerdeDeserialize(comptime T: type, allocator: std.mem.Allocator, d: anytype) @TypeOf(d.*).Error!T {
+        return ObjectAdapter.deserialize(T, allocator, d);
+    }
+};
+fn internalAdapterPaths(allocator: std.mem.Allocator) !void {
+    return internalAdapterPathsInner(allocator) catch |err| return if (err == error.WriteFailed) error.OutOfMemory else err;
+}
+fn internalAdapterPathsInner(allocator: std.mem.Allocator) !void {
+    inline for (.{ AdaptedInt, HookPayload }) |Payload| {
+        const T = union(enum) {
+            value: Payload,
+            pub const serde = .{ .tag = .internal, .tag_field = "kind" };
+        };
+        const adapters = .{ .{ AdaptedInt, ObjectAdapter }, .{ HookPayload, IntAdapter } };
+        const parsed = try serde.json.fromSliceWithMap(T, allocator, "{\"wire\":7,\"kind\":\"value\"}", adapters);
+        try testing.expectEqual(@as(i32, 7), parsed.value.n);
+        const bytes = try serde.json.toSliceWithMap(allocator, parsed, adapters);
+        defer allocator.free(bytes);
+        try testing.expectEqualStrings("{\"kind\":\"value\",\"wire\":7}", bytes);
+        var writer: serde.compat.Io.Writer.Allocating = .init(allocator);
+        defer writer.deinit();
+        var s = serde.msgpack.Serializer.init(&writer.writer, allocator);
+        try serde.serializeWith(T, parsed, &s, adapters);
+        try testing.expectEqual(@as(u8, 0x82), writer.written()[0]);
+        var d = serde.msgpack.Deserializer.init(writer.written());
+        const value = try serde.deserializeWith(T, allocator, &d, adapters);
+        try testing.expectEqual(@as(i32, 7), value.value.n);
+        if (comptime Payload == HookPayload) {
+            const tree = try serde.Value.fromAny(T, parsed, allocator);
+            defer tree.deinit(allocator);
+            const converted = try tree.toType(T, allocator);
+            try testing.expectEqual(@as(i32, 7), converted.value.n);
+        }
+    }
+}
+test "internal union payload adapters and hooks preserve their object representation" {
+    try testing.checkAllAllocationFailures(alloc, internalAdapterPaths, .{});
 }

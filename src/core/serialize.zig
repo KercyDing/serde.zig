@@ -165,7 +165,7 @@ fn emitStruct(comptime T: type, value: T, ss: anytype, comptime schema: anytype,
             const name = comptime options.wireFieldNameForDir(F.Parent, F.field.name, F.schema, .serialize);
             if (comptime options.hasFieldWithSchema(F.Parent, F.field.name, F.schema)) {
                 const With = comptime options.getFieldWithSchema(F.Parent, F.field.name, F.schema);
-                try ss.serializeField(name, With.serialize(v));
+                try emitField(ss, name, With.serialize(v), map);
             } else try emitField(ss, name, v, map);
         }
     }
@@ -244,6 +244,32 @@ fn serializeUnionExternalSchema(comptime T: type, value: T, serializer: anytype,
     }
 }
 
+fn TaggedPayloadSerializer(comptime S: type, comptime tag_key: []const u8, comptime tag_value: []const u8) type {
+    return struct {
+        parent: *S,
+        const Self = @This();
+        pub const Error = S.Error;
+        pub fn beginStruct(self: *Self) Error!ErrorPayload(@TypeOf(S.beginStruct)) {
+            var container = try self.parent.beginStruct();
+            errdefer cleanupContainer(&container);
+            try container.serializeField(tag_key, tag_value);
+            return container;
+        }
+        pub fn beginStructLen(self: *Self, len: usize) Error!StructContainer(S) {
+            var container = try beginStructN(self.parent, len + 1);
+            errdefer cleanupContainer(&container);
+            try container.serializeField(tag_key, tag_value);
+            return container;
+        }
+        pub fn beginArray(_: *Self) Error!ArrayContainer(S) {
+            @compileError("Internally tagged payload adapters must serialize an object");
+        }
+        pub fn beginArrayLen(_: *Self, _: usize) Error!ArrayContainer(S) {
+            @compileError("Internally tagged payload adapters must serialize an object");
+        }
+    };
+}
+
 fn serializeUnionInternalSchema(comptime T: type, value: T, serializer: anytype, comptime schema: anytype, comptime map: anytype) @TypeOf(serializer.*).Error!void {
     const tag_field_name = comptime options.getTagFieldSchema(T, schema);
     inline for (reflect.unionFields(T)) |field| {
@@ -251,6 +277,12 @@ fn serializeUnionInternalSchema(comptime T: type, value: T, serializer: anytype,
             const wire_name = comptime options.wireFieldNameForDir(T, field.name, schema, .serialize);
             if (comptime field.type != void and @typeInfo(field.type) != .@"struct")
                 @compileError("Internal tagging requires struct payloads, got " ++ @typeName(field.type));
+            if (comptime field.type != void and (options.hasCustomSerializer(field.type) or
+                (@TypeOf(map) != void and findOobAdapter(field.type, map) != null)))
+            {
+                var tagged = TaggedPayloadSerializer(@TypeOf(serializer.*), tag_field_name, wire_name){ .parent = serializer };
+                return serializeSchema(field.type, @field(value, field.name), &tagged, {}, map);
+            }
             const payload_fields = if (field.type == void) 0 else countStructFieldsSchema(field.type, @field(value, field.name), {});
             var ss = try beginStructN(serializer, 1 + payload_fields);
             defer cleanupContainer(&ss);
