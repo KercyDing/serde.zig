@@ -172,7 +172,8 @@ pub const Deserializer = struct {
         const tok = try self.scanner.peek();
         if (tok == .string) {
             const str_tok = try self.scanner.next();
-            const name = str_tok.string;
+            const decoded_name = try enumName(std.meta.Tag(T), str_tok.string, self.scanner.last_string_has_escape, self.borrow_strings);
+            const name = decoded_name.slice();
             inline for (fields) |field| {
                 if (field.type == void and std.mem.eql(u8, name, field.name)) {
                     return @unionInit(T, field.name, {});
@@ -185,7 +186,8 @@ pub const Deserializer = struct {
         _ = try self.scanner.next();
         const key_tok = try self.scanner.next();
         if (key_tok != .string) return error.WrongType;
-        const variant_name = key_tok.string;
+        const decoded_variant = try enumName(std.meta.Tag(T), key_tok.string, self.scanner.last_string_has_escape, self.borrow_strings);
+        const variant_name = decoded_variant.slice();
         try self.scanner.expectColon();
 
         inline for (fields) |field| {

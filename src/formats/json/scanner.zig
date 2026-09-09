@@ -6,7 +6,7 @@ const std = @import("std");
 const string_char_table = blk: {
     var table: [256]u8 = undefined;
     for (&table, 0..) |*entry, byte| {
-        entry.* = if (byte < 0x20 or byte == '"' or byte == '\\') 1 else 0;
+        entry.* = if (byte < 0x20 or byte == '"' or byte == '\\' or byte >= 0x80) 1 else 0;
     }
     break :blk table;
 };
@@ -14,7 +14,7 @@ const string_char_table = blk: {
 const string_char_table_relaxed = blk: {
     var table: [256]u8 = undefined;
     for (&table, 0..) |*entry, byte| {
-        entry.* = if (byte == '"' or byte == '\\') 1 else 0;
+        entry.* = if (byte == '"' or byte == '\\' or byte >= 0x80) 1 else 0;
     }
     break :blk table;
 };
@@ -246,7 +246,12 @@ pub const Scanner = struct {
                 }
             } else {
                 if (c < 0x20 and !self.allow_unescaped_control_chars) return error.InvalidControlCharacter;
-                pos += 1;
+                if (c >= 0x80) {
+                    const len = std.unicode.utf8ByteSequenceLength(c) catch return error.InvalidUnicode;
+                    if (pos + len > input.len) return error.InvalidUnicode;
+                    _ = std.unicode.utf8Decode(input[pos..][0..len]) catch return error.InvalidUnicode;
+                    pos += len;
+                } else pos += 1;
             }
         }
         return error.UnexpectedEof;

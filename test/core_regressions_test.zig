@@ -326,3 +326,36 @@ test "CSV and XML serialize recursive flattened field settings" {
     defer alloc.free(xml);
     try testing.expect(std.mem.indexOf(u8, xml, "<name>hello</name>") != null);
 }
+
+fn xmlEntityPaths(allocator: std.mem.Allocator) !void {
+    const T = struct { text: []const u8 };
+    const value = try serde.xml.fromSlice(T, allocator, "<root><text>a&amp;b</text></root>");
+    defer de.freeAllocated(T, value, allocator);
+    try testing.expectEqualStrings("a&b", value.text);
+}
+test "XML entity allocation errors propagate" {
+    try testing.checkAllAllocationFailures(alloc, xmlEntityPaths, .{});
+}
+
+test "invalid UTF-8 is rejected in skipped strings and enum names" {
+    const T = struct { value: i32 };
+    try testing.expectError(error.InvalidUnicode, serde.json.fromSlice(T, alloc, "{\"value\":1,\"skip\":\"\xff\"}"));
+    const E = enum { ok };
+    try testing.expectError(error.InvalidUnicode, serde.json.fromSlice(E, alloc, "\"\xc0\xaf\""));
+    const text = try serde.json.fromSlice([]const u8, alloc, "\"日本語 é\"");
+    defer alloc.free(text);
+    try testing.expectEqualStrings("日本語 é", text);
+}
+
+test "flatten inherits parent defaults and cleans up partial overrides" {
+    const T = struct {
+        nested: struct { text: []const u8, count: i32 } = .{ .text = "static", .count = 8 },
+        required: bool,
+        pub const serde = .{ .flatten = &.{"nested"} };
+    };
+    const value = try serde.json.fromSlice(T, alloc, "{\"required\":true}");
+    defer de.freeAllocated(T, value, alloc);
+    try testing.expectEqualStrings("static", value.nested.text);
+    try testing.expectEqual(@as(i32, 8), value.nested.count);
+    try testing.expectError(error.MissingField, serde.json.fromSlice(T, alloc, "{\"text\":\"owned\"}"));
+}

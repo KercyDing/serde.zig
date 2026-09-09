@@ -226,9 +226,7 @@ fn structFromMap(comptime T: type, allocator: Allocator, map: anytype, comptime 
     // Defaults are assigned only after input parsing. They are not owned or received fields.
     inline for (fields, 0..) |F, i| {
         if (!seen.isSet(i)) {
-            if (comptime opts.hasSerdeDefaultSchema(F.Parent, F.field.name, F.schema)) {
-                F.ptr(&result).* = comptime opts.getSerdeDefaultSchema(F.Parent, F.field.name, F.schema);
-            } else if (comptime F.field.defaultValue()) |dv| {
+            if (comptime F.defaultValue()) |dv| {
                 F.ptr(&result).* = dv;
             } else if (@typeInfo(F.field.type) == .optional) {
                 F.ptr(&result).* = null;
