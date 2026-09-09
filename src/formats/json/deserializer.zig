@@ -156,8 +156,9 @@ pub const Deserializer = struct {
         const tok = try self.scanner.next();
         switch (tok) {
             .string => |raw| {
+                const name = try enumName(T, raw, self.scanner.last_string_has_escape, self.borrow_strings);
                 inline for (reflect.enumFields(T)) |field| {
-                    if (std.mem.eql(u8, raw, field.name))
+                    if (std.mem.eql(u8, name.slice(), field.name))
                         return @enumFromInt(field.value);
                 }
                 return error.UnexpectedToken;
@@ -344,6 +345,39 @@ pub const SeqAccess = struct {
     }
 };
 
+fn EnumName(comptime T: type) type {
+    const n = comptime blk: {
+        var len: usize = 0;
+        for (reflect.enumFields(T)) |f| len = @max(len, f.name.len);
+        break :blk len;
+    };
+    return struct {
+        bytes: [n]u8 = undefined,
+        len: usize,
+        pub fn slice(self: *const @This()) []const u8 {
+            return self.bytes[0..self.len];
+        }
+    };
+}
+fn enumName(comptime T: type, raw: []const u8, escaped: bool, borrowed: bool) DeserializeError!EnumName(T) {
+    var result: EnumName(T) = .{ .len = 0 };
+    if (!escaped) {
+        if (raw.len > result.bytes.len) return error.UnexpectedToken;
+        @memcpy(result.bytes[0..raw.len], raw);
+        result.len = raw.len;
+        return result;
+    }
+    if (borrowed) return error.InvalidEscape;
+    // unescapeString reserves raw.len, including ArrayList growth slack.
+    var storage: [@sizeOf(EnumName(T)) * 12 + 64]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&storage);
+    const decoded = unescapeString(fba.allocator(), raw) catch |err| return if (err == error.OutOfMemory) error.UnexpectedToken else err;
+    if (decoded.len > result.bytes.len) return error.UnexpectedToken;
+    @memcpy(result.bytes[0..decoded.len], decoded);
+    result.len = decoded.len;
+    return result;
+}
+
 fn errorFromAny(err: anyerror) DeserializeError {
     return switch (err) {
         error.UnexpectedToken => error.UnexpectedToken,
@@ -382,13 +416,13 @@ fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]cons
                 'u' => {
                     i += 1;
                     if (i + 4 > raw.len) return error.UnexpectedEof;
-                    const cp = parseHex4(raw[i..][0..4]) orelse return error.InvalidUnicode;
+                    const cp = scanner_mod.parseHex4(raw[i..][0..4]) orelse return error.InvalidUnicode;
                     i += 4;
                     if (cp >= 0xD800 and cp <= 0xDBFF) {
                         if (i + 6 > raw.len or raw[i] != '\\' or raw[i + 1] != 'u')
                             return error.InvalidUnicode;
                         i += 2;
-                        const low = parseHex4(raw[i..][0..4]) orelse return error.InvalidUnicode;
+                        const low = scanner_mod.parseHex4(raw[i..][0..4]) orelse return error.InvalidUnicode;
                         i += 4;
                         if (low < 0xDC00 or low > 0xDFFF)
                             return error.InvalidUnicode;
@@ -414,20 +448,6 @@ fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]cons
         }
     }
     return out.toOwnedSlice(allocator) catch return error.OutOfMemory;
-}
-
-fn parseHex4(hex: *const [4]u8) ?u16 {
-    var result: u16 = 0;
-    for (hex) |c| {
-        const digit: u16 = switch (c) {
-            '0'...'9' => c - '0',
-            'a'...'f' => c - 'a' + 10,
-            'A'...'F' => c - 'A' + 10,
-            else => return null,
-        };
-        result = result * 16 + digit;
-    }
-    return result;
 }
 
 // Tests.

@@ -233,7 +233,14 @@ pub const Scanner = struct {
                     'u' => {
                         pos += 1;
                         if (pos + 4 > input.len) return error.UnexpectedEof;
+                        const cp = parseHex4(input[pos..][0..4]) orelse return error.InvalidUnicode;
                         pos += 4;
+                        if (cp >= 0xD800 and cp <= 0xDBFF) {
+                            if (pos + 6 > input.len or input[pos] != '\\' or input[pos + 1] != 'u') return error.InvalidUnicode;
+                            const low = parseHex4(input[pos + 2 ..][0..4]) orelse return error.InvalidUnicode;
+                            if (low < 0xDC00 or low > 0xDFFF) return error.InvalidUnicode;
+                            pos += 6;
+                        } else if (cp >= 0xDC00 and cp <= 0xDFFF) return error.InvalidUnicode;
                     },
                     else => return error.InvalidEscape,
                 }
@@ -418,4 +425,18 @@ test "unexpected eof" {
 test "unexpected token" {
     var s = Scanner{ .input = "xyz" };
     try testing.expectError(error.UnexpectedToken, s.next());
+}
+
+pub fn parseHex4(hex: *const [4]u8) ?u16 {
+    var result: u16 = 0;
+    for (hex) |c| {
+        const digit: u16 = switch (c) {
+            '0'...'9' => c - '0',
+            'a'...'f' => c - 'a' + 10,
+            'A'...'F' => c - 'A' + 10,
+            else => return null,
+        };
+        result = result * 16 + digit;
+    }
+    return result;
 }
