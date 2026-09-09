@@ -379,6 +379,7 @@ pub const Value = union(enum) {
         WrongType,
         Overflow,
         MissingField,
+        DuplicateField,
         UnknownVariant,
     };
 };

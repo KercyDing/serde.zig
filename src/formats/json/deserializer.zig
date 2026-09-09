@@ -13,6 +13,7 @@ pub const DeserializeError = error{
     UnexpectedEof,
     UnknownField,
     MissingField,
+    DuplicateField,
     InvalidNumber,
     InvalidUnicode,
     InvalidEscape,
@@ -196,6 +197,7 @@ pub const Deserializer = struct {
                     return @unionInit(T, field.name, {});
                 } else {
                     const payload = try core_deserialize.deserialize(field.type, allocator, self, .{});
+                    errdefer core_deserialize.ownership.free(field.type, payload, allocator, {}, core_deserialize.ownership.borrowedInput(self));
                     const close = try self.scanner.next();
                     if (close != .object_end) return error.UnexpectedToken;
                     return @unionInit(T, field.name, payload);
@@ -221,7 +223,10 @@ pub const Deserializer = struct {
         if (tok != .array_begin) return error.WrongType;
 
         var items: std.ArrayList(Child) = .empty;
-        errdefer items.deinit(allocator);
+        errdefer {
+            for (items.items) |item| core_deserialize.ownership.free(Child, item, allocator, {}, core_deserialize.ownership.borrowedInput(self));
+            items.deinit(allocator);
+        }
 
         if (try self.scanner.isContainerEmpty(']')) {
             _ = try self.scanner.next();
@@ -230,7 +235,10 @@ pub const Deserializer = struct {
 
         while (true) {
             const elem = try core_deserialize.deserialize(Child, allocator, self, .{});
-            items.append(allocator, elem) catch return error.OutOfMemory;
+            items.append(allocator, elem) catch {
+                core_deserialize.ownership.free(Child, elem, allocator, {}, core_deserialize.ownership.borrowedInput(self));
+                return error.OutOfMemory;
+            };
             switch (try self.scanner.finishContainer(']')) {
                 .end => break,
                 .more => {},
@@ -243,7 +251,7 @@ pub const Deserializer = struct {
     pub fn deserializeSeqAccess(self: *Deserializer) Error!SeqAccess {
         const tok = try self.scanner.next();
         if (tok != .array_begin) return error.WrongType;
-        return .{ .scanner = &self.scanner, .options = self.options };
+        return .{ .scanner = &self.scanner, .borrow_strings = self.borrow_strings, .options = self.options };
     }
 
     pub fn raiseError(_: *Deserializer, err: anyerror) Error {
@@ -286,6 +294,12 @@ pub const MapAccess = struct {
         }
     }
 
+    pub fn freeKey(self: *MapAccess, key: []const u8, allocator: Allocator) void {
+        const p = @intFromPtr(key.ptr);
+        const start = @intFromPtr(self.scanner.input.ptr);
+        if (p < start or p - start > self.scanner.input.len) allocator.free(key);
+    }
+
     pub fn nextValue(self: *MapAccess, comptime T: type, allocator: Allocator) Error!T {
         var deser = Deserializer{ .scanner = self.scanner.*, .borrow_strings = self.borrow_strings, .options = self.options };
         const result = try core_deserialize.deserialize(T, allocator, &deser, .{});
@@ -304,6 +318,7 @@ pub const MapAccess = struct {
 
 pub const SeqAccess = struct {
     scanner: *Scanner,
+    borrow_strings: bool = false,
     options: Options = .{},
     at_start: bool = true,
 
@@ -322,7 +337,7 @@ pub const SeqAccess = struct {
                 .more => {},
             }
         }
-        var deser = Deserializer{ .scanner = self.scanner.*, .options = self.options };
+        var deser = Deserializer{ .scanner = self.scanner.*, .borrow_strings = self.borrow_strings, .options = self.options };
         const result = try core_deserialize.deserialize(T, allocator, &deser, .{});
         self.scanner.* = deser.scanner;
         return result;
@@ -331,8 +346,11 @@ pub const SeqAccess = struct {
 
 fn errorFromAny(err: anyerror) DeserializeError {
     return switch (err) {
+        error.UnexpectedToken => error.UnexpectedToken,
+        error.InvalidNumber => error.InvalidNumber,
         error.UnknownField => error.UnknownField,
         error.MissingField => error.MissingField,
+        error.DuplicateField => error.DuplicateField,
         error.UnexpectedEof => error.UnexpectedEof,
         error.OutOfMemory => error.OutOfMemory,
         error.WithFailed => error.WithFailed,

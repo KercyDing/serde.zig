@@ -64,6 +64,7 @@ pub fn toWriterSchema(allocator: std.mem.Allocator, writer: *compat.Io.Writer, v
 pub fn fromSliceSchema(comptime T: type, allocator: std.mem.Allocator, input: []const u8, comptime schema: anytype) !T {
     var deser = Deserializer.init(input);
     const result = try core_deserialize.deserializeSchema(T, allocator, &deser, schema, .{});
+    errdefer core_deserialize.freeAllocatedSchema(T, result, allocator, schema);
     if (deser.pos != deser.input.len) return error.TrailingData;
     return result;
 }
@@ -80,6 +81,7 @@ pub fn fromReaderSchema(comptime T: type, allocator: std.mem.Allocator, reader: 
 pub fn fromSlice(comptime T: type, allocator: std.mem.Allocator, input: []const u8) !T {
     var deser = Deserializer.init(input);
     const result = try core_deserialize.deserialize(T, allocator, &deser, .{});
+    errdefer core_deserialize.freeAllocated(T, result, allocator);
     if (deser.pos != deser.input.len) return error.TrailingData;
     return result;
 }

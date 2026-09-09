@@ -185,7 +185,7 @@ fn deserializeTyped(
     var deserializer = Deserializer.init(prepared.body, options);
     const result = try core_deserialize.deserializeSchema(T, allocator, &deserializer, schema, map);
     if (deserializer.pos != deserializer.input.len) {
-        core_deserialize.freeAllocated(T, result, allocator);
+        core_deserialize.freeAllocatedSchema(T, result, allocator, schema);
         return error.TrailingData;
     }
     return result;

@@ -27,6 +27,7 @@ pub fn toSlice(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 
 pub fn toSliceWith(allocator: std.mem.Allocator, value: anytype, opts: Options) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
     try toWriterWith(allocator, &aw.writer, value, opts);
     return aw.toOwnedSlice();
 }
@@ -59,6 +60,7 @@ pub fn toSliceSchema(allocator: std.mem.Allocator, value: anytype, comptime sche
 
 pub fn toSliceWithSchema(allocator: std.mem.Allocator, value: anytype, opts: Options, comptime schema: anytype) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
     try toWriterWithSchema(allocator, &aw.writer, value, opts, schema);
     return aw.toOwnedSlice();
 }
@@ -76,6 +78,7 @@ pub fn toWriterWithSchema(allocator: std.mem.Allocator, writer: *compat.Io.Write
 
 pub fn toSliceWithMap(allocator: std.mem.Allocator, value: anytype, comptime map: anytype) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
     try toWriterWithMap(allocator, &aw.writer, value, map);
     return aw.toOwnedSlice();
 }

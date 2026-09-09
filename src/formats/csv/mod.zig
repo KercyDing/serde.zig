@@ -32,6 +32,7 @@ pub fn toSlice(allocator: std.mem.Allocator, value: anytype) ![]u8 {
 /// Serialize a slice of structs to CSV with a specific dialect.
 pub fn toSliceWith(allocator: std.mem.Allocator, value: anytype, dialect: Dialect) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
     try toWriterWith(&aw.writer, value, dialect);
     return aw.toOwnedSlice();
 }
@@ -80,6 +81,7 @@ pub fn toSliceSchema(allocator: std.mem.Allocator, value: anytype, comptime sche
 /// Serialize a slice of structs to CSV with a specific dialect and an external schema.
 pub fn toSliceWithSchema(allocator: std.mem.Allocator, value: anytype, dialect: Dialect, comptime schema: anytype) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
     try toWriterWithSchema(&aw.writer, value, dialect, schema);
     return aw.toOwnedSlice();
 }
