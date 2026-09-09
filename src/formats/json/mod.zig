@@ -222,6 +222,16 @@ pub fn fromReaderWithMap(comptime T: type, allocator: std.mem.Allocator, reader:
     return fromSliceWithMap(T, allocator, buf, map);
 }
 
+/// Parse into a result that owns a separate arena. Release it with `.deinit()`.
+pub fn fromSliceManaged(comptime T: type, allocator: std.mem.Allocator, input: []const u8) !@import("../../core/parsed.zig").Parsed(T) {
+    return fromSliceManagedSchema(T, allocator, input, {});
+}
+
+/// Parse with an external schema into an owning result.
+pub fn fromSliceManagedSchema(comptime T: type, allocator: std.mem.Allocator, input: []const u8, comptime schema: anytype) !@import("../../core/parsed.zig").Parsed(T) {
+    return @import("../../core/parsed.zig").parse(T, allocator, input, schema, @This());
+}
+
 // Tests.
 
 const testing = std.testing;

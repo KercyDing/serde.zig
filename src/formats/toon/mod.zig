@@ -154,6 +154,16 @@ fn readAll(allocator: std.mem.Allocator, reader: *compat.Io.Reader) ![]u8 {
     return reader.allocRemaining(allocator, compat.Io.Limit.limited(10 * 1024 * 1024)) catch return error.ReadFailed;
 }
 
+/// Parse into a result that owns a separate arena. Release it with `.deinit()`.
+pub fn fromSliceManaged(comptime T: type, allocator: std.mem.Allocator, input: []const u8) !@import("../../core/parsed.zig").Parsed(T) {
+    return fromSliceManagedSchema(T, allocator, input, {});
+}
+
+/// Parse with an external schema into an owning result.
+pub fn fromSliceManagedSchema(comptime T: type, allocator: std.mem.Allocator, input: []const u8, comptime schema: anytype) !@import("../../core/parsed.zig").Parsed(T) {
+    return @import("../../core/parsed.zig").parse(T, allocator, input, schema, @This());
+}
+
 test "roundtrip struct" {
     const testing = std.testing;
     const Point = struct { x: i32, y: i32 };

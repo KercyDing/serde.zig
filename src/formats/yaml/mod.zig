@@ -172,6 +172,16 @@ pub fn fromValue(comptime T: type, allocator: std.mem.Allocator, value: CoreValu
 
 const testing = std.testing;
 
+/// Parse into a result that owns a separate arena. Release it with `.deinit()`.
+pub fn fromSliceManaged(comptime T: type, allocator: std.mem.Allocator, input: []const u8) !@import("../../core/parsed.zig").Parsed(T) {
+    return fromSliceManagedSchema(T, allocator, input, {});
+}
+
+/// Parse with an external schema into an owning result.
+pub fn fromSliceManagedSchema(comptime T: type, allocator: std.mem.Allocator, input: []const u8, comptime schema: anytype) !@import("../../core/parsed.zig").Parsed(T) {
+    return @import("../../core/parsed.zig").parse(T, allocator, input, schema, @This());
+}
+
 test "roundtrip flat struct" {
     const Point = struct { x: i32, y: i32 };
     const bytes = try toSlice(testing.allocator, Point{ .x = 10, .y = 20 });
