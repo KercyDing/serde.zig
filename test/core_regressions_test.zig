@@ -224,3 +224,105 @@ fn adapterPaths(allocator: std.mem.Allocator) !void {
 test "external adapters propagate through all container shapes" {
     try testing.checkAllAllocationFailures(alloc, adapterPaths, .{});
 }
+
+fn failurePaths(allocator: std.mem.Allocator) !void {
+    const Untagged = union(enum) {
+        first: Renamed,
+        second: []const u8,
+        pub const serde = .{ .tag = .untagged };
+    };
+    const value = try serde.json.fromSlice(Untagged, allocator, "{\"text\":\"allocated\"}");
+    defer de.freeAllocated(Untagged, value, allocator);
+    try testing.expectEqualStrings("allocated", value.first.text);
+    const csv = try serde.csv.fromSlice([]const Renamed, allocator, "text\nfirst\nsecond\n");
+    defer de.freeAllocated(@TypeOf(csv), csv, allocator);
+    const tagged = try serde.json.fromSlice(Internal, allocator, "{\"name\":\"v\",\"kind\":\"item\"}");
+    defer de.freeAllocated(Internal, tagged, allocator);
+}
+test "untagged OOM and CSV failures propagate without leaks" {
+    try testing.checkAllAllocationFailures(alloc, failurePaths, .{});
+}
+
+test "schema defaults and borrowed maps are safe on failure" {
+    const T = struct { value: []const u8, required: i32 };
+    const schema = .{ .default = .{ .value = "default" } };
+    try testing.expectError(error.MissingField, serde.json.fromSliceSchema(T, alloc, "{}", schema));
+    try testing.expectError(error.TrailingData, serde.json.fromSliceSchema(T, alloc, "{\"required\":1}x", schema));
+    try testing.expectError(error.WrongType, serde.json.fromSliceBorrowed(std.StringHashMap([]const u8), alloc, "{\"a\":\"view\",\"b\":false}"));
+}
+
+test "writer failures release deferred serializer containers" {
+    const T = struct { nested: struct { name: []const u8 }, rows: []const struct { v: i32 } };
+    const value = T{ .nested = .{ .name = "long text" }, .rows = &.{.{ .v = 3 }} };
+    for (0..24) |n| {
+        var buffer: [24]u8 = undefined;
+        var writer: serde.compat.Io.Writer = .fixed(buffer[0..n]);
+        try testing.expectError(error.WriteFailed, serde.toml.toWriter(alloc, &writer, value));
+        writer = .fixed(buffer[0..n]);
+        try testing.expectError(error.WriteFailed, serde.msgpack.toWriter(alloc, &writer, value));
+    }
+}
+
+fn layoutAdapterPaths(allocator: std.mem.Allocator) !void {
+    return layoutAdapterPathsInner(allocator) catch |err| return if (err == error.WriteFailed) error.OutOfMemory else err;
+}
+fn layoutAdapterPathsInner(allocator: std.mem.Allocator) !void {
+    const T = struct { scalar: AdaptedInt, nested: struct { value: AdaptedInt }, list: []const AdaptedInt, optional: ?AdaptedInt };
+    const value = T{ .scalar = .{ .n = 1 }, .nested = .{ .value = .{ .n = 2 } }, .list = &.{.{ .n = 3 }}, .optional = .{ .n = 4 } };
+    const map = .{.{ AdaptedInt, IntAdapter }};
+    inline for (.{ serde.toml, serde.yaml, serde.xml }) |format| {
+        var writer: serde.compat.Io.Writer.Allocating = .init(allocator);
+        defer writer.deinit();
+        var s = if (format == serde.toml) format.Serializer.init(&writer.writer, allocator) else if (format == serde.xml) format.Serializer.init(&writer.writer, .{}) else format.Serializer.init(&writer.writer);
+        if (format == serde.xml) try writer.writer.writeAll("<root>");
+        try serde.serializeWith(T, value, &s, map);
+        if (format == serde.xml) try writer.writer.writeAll("</root>");
+        if (format == serde.toml) {
+            const tree = try format.parse(allocator, writer.written());
+            defer (format.Value{ .table = tree }).deinit(allocator);
+            var d = format.Deserializer.init(&tree);
+            const parsed = try serde.deserializeWith(T, allocator, &d, map);
+            defer de.freeAllocated(T, parsed, allocator);
+            try testing.expectEqual(@as(i32, 3), parsed.list[0].n);
+        } else if (format == serde.yaml) {
+            const tree = try format.parse(allocator, writer.written());
+            defer tree.deinit(allocator);
+            var d = format.Deserializer.init(&tree);
+            const parsed = try serde.deserializeWith(T, allocator, &d, map);
+            defer de.freeAllocated(T, parsed, allocator);
+            try testing.expectEqual(@as(i32, 4), parsed.optional.?.n);
+        } else {
+            var d = format.Deserializer.init(writer.written());
+            _ = try d.scanner.next(); // The low-level XML interface starts inside the root.
+            const parsed = try serde.deserializeWith(T, allocator, &d, map);
+            defer de.freeAllocated(T, parsed, allocator);
+            try testing.expectEqual(@as(i32, 2), parsed.nested.value.n);
+        }
+    }
+}
+test "layout-sensitive formats preserve nested adapter container shapes" {
+    try testing.checkAllAllocationFailures(alloc, layoutAdapterPaths, .{});
+}
+
+fn yamlOwnedTrees(allocator: std.mem.Allocator) !void {
+    const input = "base: &b {name: original}\nbase: replaced\nitems:\n  - <<: *b\n    label: text\n  - name: next\n";
+    const value = try serde.yaml.parse(allocator, input);
+    defer value.deinit(allocator);
+    const documents = try serde.yaml.parseAllValues(allocator, "---\nvalue: &a hello\ncopy: *a\n---\nvalue: world\n");
+    defer {
+        for (documents) |doc| doc.deinit(allocator);
+        allocator.free(documents);
+    }
+}
+test "YAML compact mappings and replaced anchors own their trees" {
+    try testing.checkAllAllocationFailures(alloc, yamlOwnedTrees, .{});
+}
+test "CSV and XML serialize recursive flattened field settings" {
+    const value = DeepFlat{ .flat = .{ .leaf = .{ .text = "hello", .optional = 2 } } };
+    const csv = try serde.csv.toSlice(alloc, @as([]const DeepFlat, &.{value}));
+    defer alloc.free(csv);
+    try testing.expect(std.mem.startsWith(u8, csv, "name,optional,count"));
+    const xml = try serde.xml.toSlice(alloc, value);
+    defer alloc.free(xml);
+    try testing.expect(std.mem.indexOf(u8, xml, "<name>hello</name>") != null);
+}

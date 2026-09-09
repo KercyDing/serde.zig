@@ -13,6 +13,7 @@ const core_serialize = @import("../../core/serialize.zig");
 const core_deserialize = @import("../../core/deserialize.zig");
 const kind_mod = @import("../../core/kind.zig");
 const xml_writer = @import("writer.zig");
+const field_meta = @import("../../core/fields.zig");
 const reflect = @import("../../reflect.zig");
 const opt = @import("../../core/options.zig");
 
@@ -156,23 +157,25 @@ fn writeStructElement(
     comptime root_name: []const u8,
     comptime schema: anytype,
 ) !void {
-    const fields = reflect.structFields(T);
+    const fields = comptime field_meta.leaves(T, schema, .serialize);
+    comptime field_meta.validate(T, schema, .serialize);
 
     // Opening tag with attributes.
     writer.writeByte('<') catch return error.WriteFailed;
     writer.writeAll(root_name) catch return error.WriteFailed;
 
     // Attributes: fields marked with xml_attribute.
-    inline for (fields) |field| {
-        if (comptime opt.shouldSkipFieldSchema(T, field.name, .serialize, schema)) continue;
-        if (comptime isXmlAttribute(T, field.name, schema)) {
+    inline for (fields) |F| {
+        const field = F.field;
+        if (comptime opt.shouldSkipFieldSchema(F.Parent, field.name, .serialize, F.schema)) continue;
+        if (comptime isXmlAttribute(F.Parent, field.name, F.schema)) {
             writer.writeByte(' ') catch return error.WriteFailed;
-            const wire_name = comptime opt.wireFieldNameForDir(T, field.name, schema, .serialize);
+            const wire_name = comptime opt.wireFieldNameForDir(F.Parent, field.name, F.schema, .serialize);
             writer.writeAll(wire_name) catch return error.WriteFailed;
             writer.writeByte('=') catch return error.WriteFailed;
             // Write attribute value.
             var buf: [64]u8 = undefined;
-            const val_str = fieldToString(field.type, @field(value, field.name), &buf);
+            const val_str = fieldToString(field.type, F.get(value), &buf);
             xml_writer.writeXmlAttrEscaped(writer, val_str) catch return error.WriteFailed;
         }
     }
@@ -184,33 +187,23 @@ fn writeStructElement(
     if (opts.pretty) ser.depth = 1;
     var ss = try ser.beginStruct();
 
-    inline for (fields) |field| {
-        if (comptime opt.shouldSkipFieldSchema(T, field.name, .serialize, schema)) continue;
-        if (comptime isXmlAttribute(T, field.name, schema)) continue;
+    inline for (fields) |F| {
+        const field = F.field;
+        if (comptime opt.shouldSkipFieldSchema(F.Parent, field.name, .serialize, F.schema)) continue;
+        if (comptime isXmlAttribute(F.Parent, field.name, F.schema)) continue;
 
-        if (comptime opt.isFlattenedFieldSchema(T, field.name, schema)) {
-            if (@typeInfo(field.type) != .@"struct")
-                @compileError("Flatten requires a struct type, got " ++ @typeName(field.type));
-            const nested = @field(value, field.name);
-            inline for (reflect.structFields(field.type)) |sf| {
-                const nested_wire = comptime opt.wireFieldNameForDir(field.type, sf.name, {}, .serialize);
-                try ss.serializeField(nested_wire, @field(nested, sf.name));
-            }
-            continue;
-        }
+        const wire_name = comptime opt.wireFieldNameForDir(F.Parent, field.name, F.schema, .serialize);
+        const field_value = F.get(value);
 
-        const wire_name = comptime opt.wireFieldNameForDir(T, field.name, schema, .serialize);
-        const field_value = @field(value, field.name);
-
-        const skip_null = comptime opt.isSkipIfNullSchema(T, field.name, schema) and @typeInfo(field.type) == .optional;
-        const skip_empty = comptime opt.isSkipIfEmptySchema(T, field.name, schema) and @typeInfo(field.type) == .pointer;
+        const skip_null = comptime opt.isSkipIfNullSchema(F.Parent, field.name, F.schema) and @typeInfo(field.type) == .optional;
+        const skip_empty = comptime opt.isSkipIfEmptySchema(F.Parent, field.name, F.schema) and @typeInfo(field.type) == .pointer;
 
         const should_skip = (skip_null and field_value == null) or
             (skip_empty and field_value.len == 0);
 
         if (!should_skip) {
-            if (comptime opt.hasFieldWithSchema(T, field.name, schema)) {
-                const WithMod = comptime opt.getFieldWithSchema(T, field.name, schema);
+            if (comptime opt.hasFieldWithSchema(F.Parent, field.name, F.schema)) {
+                const WithMod = comptime opt.getFieldWithSchema(F.Parent, field.name, F.schema);
                 try ss.serializeField(wire_name, WithMod.serialize(field_value));
             } else {
                 try ss.serializeField(wire_name, field_value);

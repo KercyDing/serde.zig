@@ -166,7 +166,7 @@ fn emitStruct(comptime T: type, value: T, ss: anytype, comptime schema: anytype,
             if (comptime options.hasFieldWithSchema(F.Parent, F.field.name, F.schema)) {
                 const With = comptime options.getFieldWithSchema(F.Parent, F.field.name, F.schema);
                 try ss.serializeField(name, With.serialize(v));
-            } else try ss.serializeField(name, adapted(v, map));
+            } else try emitField(ss, name, v, map);
         }
     }
 }
@@ -178,6 +178,18 @@ fn includeField(comptime F: type, v: F.field.type) bool {
         if (v.len == 0) return false;
     }
     return true;
+}
+fn emitField(ss: anytype, comptime name: []const u8, value: anytype, comptime map: anytype) @TypeOf(ss.*).Error!void {
+    if (@hasDecl(@TypeOf(ss.*), "serializeFieldWithMap")) return ss.serializeFieldWithMap(name, value, map);
+    return ss.serializeField(name, adapted(value, map));
+}
+/// Format layout must treat directly adapted types like custom hooks while
+/// preserving the shape of containers that merely contain adapted children.
+pub fn kindWithMap(comptime T: type, comptime map: anytype) Kind {
+    if (comptime @TypeOf(map) != void) {
+        if (comptime findOobAdapter(T, map) != null) return .custom;
+    }
+    return typeKind(T);
 }
 fn adapted(value: anytype, comptime map: anytype) if (@TypeOf(map) == void or reflect.structFields(@TypeOf(map)).len == 0) @TypeOf(value) else Adapted(@TypeOf(value), map) {
     if (comptime @TypeOf(map) == void or reflect.structFields(@TypeOf(map)).len == 0) return value;
@@ -225,7 +237,7 @@ fn serializeUnionExternalSchema(comptime T: type, value: T, serializer: anytype,
                 const payload = @field(value, field.name);
                 var ss = try beginStructN(serializer, 1);
                 defer cleanupContainer(&ss);
-                try ss.serializeField(wire_name, adapted(payload, map));
+                try emitField(&ss, wire_name, payload, map);
                 return ss.end();
             }
         }
@@ -265,7 +277,7 @@ fn serializeUnionAdjacentSchema(comptime T: type, value: T, serializer: anytype,
             try ss.serializeField(tag_field_name, @as([]const u8, wire_name));
             if (field.type != void) {
                 const payload = @field(value, field.name);
-                try ss.serializeField(content_field_name, adapted(payload, map));
+                try emitField(&ss, content_field_name, payload, map);
             }
             return ss.end();
         }
@@ -309,7 +321,9 @@ fn serializeMapSchema(comptime T: type, value: T, serializer: anytype, comptime 
     defer cleanupContainer(&ss);
     var it = value.iterator();
     while (it.next()) |entry| {
-        try ss.serializeEntry(entry.key_ptr.*, adapted(entry.value_ptr.*, map));
+        if (@hasDecl(@TypeOf(ss), "serializeEntryWithMap")) {
+            try ss.serializeEntryWithMap(entry.key_ptr.*, entry.value_ptr.*, map);
+        } else try ss.serializeEntry(entry.key_ptr.*, adapted(entry.value_ptr.*, map));
     }
     return ss.end();
 }
