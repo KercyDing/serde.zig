@@ -445,8 +445,9 @@ fn unescapeString(allocator: Allocator, raw: []const u8) DeserializeError![]cons
             }
             i += 1;
         } else {
-            out.appendAssumeCapacity(raw[i]);
-            i += 1;
+            const end = std.mem.indexOfScalarPos(u8, raw, i, '\\') orelse raw.len;
+            out.appendSliceAssumeCapacity(raw[i..end]);
+            i = end;
         }
     }
     return out.toOwnedSlice(allocator) catch return error.OutOfMemory;
