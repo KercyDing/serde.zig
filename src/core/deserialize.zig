@@ -163,11 +163,10 @@ fn deserializeTupleSchema(
             return deserializer.raiseError(error.UnexpectedEof);
         fields_seen.set(i);
     }
-    if (fields.len > 0) {
-        if (try nextElement(fields[0].type, allocator, &seq, map)) |extra| {
-            ownership.free(fields[0].type, extra, allocator, {}, ownership.borrowedInput(deserializer));
-            return deserializer.raiseError(error.UnexpectedToken);
-        }
+    const Extra = if (fields.len > 0) fields[0].type else void;
+    if (try nextElement(Extra, allocator, &seq, map)) |extra| {
+        ownership.free(Extra, extra, allocator, {}, ownership.borrowedInput(deserializer));
+        return deserializer.raiseError(error.UnexpectedToken);
     }
     return result;
 }
@@ -285,7 +284,14 @@ fn deserializeSlice(comptime T: type, allocator: Allocator, d: anytype, comptime
         for (items.items) |v| ownership.free(C, v, allocator, {}, ownership.borrowedInput(d));
         items.deinit(allocator);
     }
-    if (@hasField(@TypeOf(seq), "remaining")) try items.ensureTotalCapacity(allocator, seq.remaining);
+    if (@hasField(@TypeOf(seq), "remaining")) {
+        // Length prefixes are hints until the input is validated. Bound the
+        // eager allocation so truncated hostile input cannot reserve gigabytes.
+        const max_hint = @max(1, 64 * 1024 / @max(1, @sizeOf(C)));
+        try items.ensureTotalCapacityPrecise(allocator, @min(seq.remaining, max_hint));
+    } else if (@hasField(@TypeOf(seq), "items")) {
+        try items.ensureTotalCapacityPrecise(allocator, seq.items.len);
+    }
     while (try nextElement(C, allocator, &seq, map)) |v| {
         errdefer ownership.free(C, v, allocator, {}, ownership.borrowedInput(d));
         try items.append(allocator, v);
