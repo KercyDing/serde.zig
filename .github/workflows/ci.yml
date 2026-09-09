@@ -80,7 +80,7 @@ jobs:
                 (cd serde-base && zig build bench -- --format json --compare std_json --out "../$baseline")
               fi
             else
-              printf '{"schema_version":2,"results":[]}\n' > "$baseline"
+              printf '{"schema_version":3,"allocator":"smp","results":[]}\n' > "$baseline"
             fi
           else
             cp bench/baseline.json "$baseline"

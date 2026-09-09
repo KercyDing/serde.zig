@@ -429,10 +429,10 @@ fn runAll(allocator: Allocator, results: *std.ArrayList(BenchResult)) !void {
 fn runBenchmark(bench: Benchmark) !BenchResult {
     const warmup_iters: usize = if (bench.mode != .cold) 20 else 1;
     for (0..warmup_iters) |_| {
-        _ = try bench.run(std.heap.page_allocator);
+        _ = try bench.run(std.heap.smp_allocator);
     }
 
-    var probe_alloc = CountingAllocator{ .child = std.heap.page_allocator };
+    var probe_alloc = CountingAllocator{ .child = std.heap.smp_allocator };
     const probe_start = nowNs();
     const probe_size = try bench.run(probe_alloc.allocator());
     const probe_ns = @max(nowNs() - probe_start, 1);
@@ -445,13 +445,13 @@ fn runBenchmark(bench: Benchmark) !BenchResult {
     iterations = @max(iterations, min_iterations);
 
     // Count allocations separately: allocator instrumentation is not timed.
-    var counting = CountingAllocator{ .child = std.heap.page_allocator };
+    var counting = CountingAllocator{ .child = std.heap.smp_allocator };
     const output_size = try bench.run(counting.allocator());
     var samples: [7]f64 = undefined;
     for (&samples) |*sample| {
         const start_ns = nowNs();
         for (0..iterations) |_| {
-            const size = try bench.run(std.heap.page_allocator);
+            const size = try bench.run(std.heap.smp_allocator);
             std.mem.doNotOptimizeAway(size);
         }
         sample.* = @as(f64, @floatFromInt(@max(nowNs() - start_ns, 1))) / @as(f64, @floatFromInt(iterations));
@@ -882,7 +882,7 @@ fn renderText(allocator: Allocator, results: []const BenchResult) ![]u8 {
 
 fn renderJson(allocator: Allocator, results: []const BenchResult) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
-    try aw.writer.writeAll("{\"schema_version\":2,\"results\":[");
+    try aw.writer.writeAll("{\"schema_version\":3,\"allocator\":\"smp\",\"results\":[");
     for (results, 0..) |result, i| {
         if (i != 0) try aw.writer.writeByte(',');
         try aw.writer.writeByte('{');
@@ -936,6 +936,7 @@ fn writeEscapedJsonString(writer: *compat.Io.Writer, value: []const u8) !void {
 
 const Baseline = struct {
     schema_version: u32,
+    allocator: []const u8,
     results: []const struct {
         id: []const u8,
         implementation: []const u8,
@@ -948,7 +949,7 @@ const Baseline = struct {
 fn parseBaseline(allocator: Allocator, bytes: []const u8) !std.json.Parsed(Baseline) {
     const parsed = std.json.parseFromSlice(Baseline, allocator, bytes, .{ .ignore_unknown_fields = true }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.IncompatibleBaseline;
     errdefer parsed.deinit();
-    if (parsed.value.schema_version != 2) return error.IncompatibleBaseline;
+    if (parsed.value.schema_version != 3 or !std.mem.eql(u8, parsed.value.allocator, "smp")) return error.IncompatibleBaseline;
     for (parsed.value.results) |old| {
         if (!std.mem.eql(u8, old.zig_version, builtin.zig_version_string) or
             !std.mem.eql(u8, old.target, @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin.os.tag)) or
@@ -991,6 +992,6 @@ test "counting allocator records allocations" {
 test "baseline rejects missing and incompatible metadata" {
     try std.testing.expectError(error.IncompatibleBaseline, parseBaseline(std.testing.allocator, "{}"));
     try std.testing.expectError(error.IncompatibleBaseline, parseBaseline(std.testing.allocator, "{\"schema_version\":1,\"results\":[]}"));
-    const empty = try parseBaseline(std.testing.allocator, "{ \"schema_version\": 2, \"results\": [] }");
+    const empty = try parseBaseline(std.testing.allocator, "{ \"schema_version\": 3, \"allocator\": \"smp\", \"results\": [] }");
     defer empty.deinit();
 }
