@@ -7,7 +7,10 @@ const Allocator = std.mem.Allocator;
 const compat = serde.compat;
 
 const OutputFormat = enum { text, json };
-const Mode = enum { cold, warm };
+const Mode = enum { cold, warm, cpu };
+var msgpack_input: []const u8 = undefined;
+var prepared_map: std.StringHashMap(u32) = undefined;
+var cpu_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
 const Flat = struct {
     id: u64,
@@ -186,6 +189,8 @@ const BenchResult = struct {
     optimize: std.builtin.OptimizeMode,
     iterations: usize,
     ns_per_op: f64,
+    min_ns_per_op: f64,
+    max_ns_per_op: f64,
     allocations_per_op: f64,
     bytes_allocated_per_op: f64,
     throughput_mb_s: f64,
@@ -251,6 +256,15 @@ pub fn main() !void {
     var results: std.ArrayList(BenchResult) = .empty;
     defer results.deinit(gpa);
 
+    msgpack_input = try serde.msgpack.toSlice(gpa, nested_value);
+    defer gpa.free(msgpack_input);
+    prepared_map = std.StringHashMap(u32).init(gpa);
+    defer prepared_map.deinit();
+    try prepared_map.put("alpha", 1);
+    try prepared_map.put("bravo", 2);
+    try prepared_map.put("charlie", 3);
+    try prepared_map.put("delta", 4);
+    defer cpu_arena.deinit();
     try runAll(gpa, &results);
     if (options.baseline.len != 0) try applyBaseline(gpa, results.items, options.baseline, options.threshold_percent);
 
@@ -293,26 +307,23 @@ fn runBenchmark(bench: Benchmark) !BenchResult {
     iterations = @min(iterations, max_iterations);
     iterations = @max(iterations, min_iterations);
 
+    // Count allocations separately: allocator instrumentation is not timed.
     var counting = CountingAllocator{ .child = std.heap.page_allocator };
-    const measured_allocator = counting.allocator();
-    var total_output_size: usize = 0;
-    const start_ns = nowNs();
-    for (0..iterations) |_| {
-        total_output_size += try bench.run(measured_allocator);
+    const output_size = try bench.run(counting.allocator());
+    var samples: [7]f64 = undefined;
+    for (&samples) |*sample| {
+        const start_ns = nowNs();
+        for (0..iterations) |_| {
+            const size = try bench.run(std.heap.page_allocator);
+            std.mem.doNotOptimizeAway(size);
+        }
+        sample.* = @as(f64, @floatFromInt(@max(nowNs() - start_ns, 1))) / @as(f64, @floatFromInt(iterations));
     }
-    const elapsed_ns = @max(nowNs() - start_ns, 1);
-
-    const iter_f: f64 = @floatFromInt(iterations);
-    const elapsed_f: f64 = @floatFromInt(elapsed_ns);
-    const ns_per_op = elapsed_f / iter_f;
-    const bytes_per_op: f64 = @floatFromInt(bench.input_bytes);
-    const throughput = if (bench.input_bytes == 0)
-        0
-    else
-        (bytes_per_op * iter_f) / (elapsed_f / std.time.ns_per_s) / (1024.0 * 1024.0);
-
+    std.mem.sort(f64, &samples, {}, std.sort.asc(f64));
+    const ns_per_op = samples[3];
+    const bytes_per_op: f64 = @floatFromInt(if (std.mem.eql(u8, bench.format, "msgpack")) msgpack_input.len else bench.input_bytes);
+    const throughput = bytes_per_op / ns_per_op * std.time.ns_per_s / (1024.0 * 1024.0);
     std.mem.doNotOptimizeAway(probe_size);
-    std.mem.doNotOptimizeAway(total_output_size);
 
     return .{
         .id = bench.id,
@@ -326,10 +337,12 @@ fn runBenchmark(bench: Benchmark) !BenchResult {
         .optimize = builtin.mode,
         .iterations = iterations,
         .ns_per_op = ns_per_op,
-        .allocations_per_op = @as(f64, @floatFromInt(counting.allocations)) / iter_f,
-        .bytes_allocated_per_op = @as(f64, @floatFromInt(counting.bytes_allocated)) / iter_f,
+        .min_ns_per_op = samples[0],
+        .max_ns_per_op = samples[6],
+        .allocations_per_op = @floatFromInt(counting.allocations),
+        .bytes_allocated_per_op = @floatFromInt(counting.bytes_allocated),
         .throughput_mb_s = throughput,
-        .output_size_bytes = @as(f64, @floatFromInt(total_output_size)) / iter_f,
+        .output_size_bytes = @floatFromInt(output_size),
         .key_case = bench.key_case,
     };
 }
@@ -494,13 +507,7 @@ fn opJsonEnumDeserialize(allocator: Allocator) !usize {
 }
 
 fn opJsonMapSerialize(allocator: Allocator) !usize {
-    var map = std.StringHashMap(u32).init(allocator);
-    defer map.deinit();
-    try map.put("alpha", 1);
-    try map.put("bravo", 2);
-    try map.put("charlie", 3);
-    try map.put("delta", 4);
-    const out = try serde.json.toSlice(allocator, map);
+    const out = try serde.json.toSlice(allocator, prepared_map);
     defer allocator.free(out);
     return out.len;
 }
@@ -517,7 +524,9 @@ fn opJsonMapDeserialize(allocator: Allocator) !usize {
 fn opJsonDynamicValue(allocator: Allocator) !usize {
     const value = try serde.json.toValue(allocator, nested_value);
     defer value.deinit(allocator);
-    const typed = try serde.json.fromValue(Nested, allocator, value);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const typed = try serde.json.fromValue(Nested, arena.allocator(), value);
     std.mem.doNotOptimizeAway(typed);
     return nested_json.len;
 }
@@ -569,8 +578,7 @@ fn opMsgpackSerialize(allocator: Allocator) !usize {
 }
 
 fn opMsgpackDeserialize(allocator: Allocator) !usize {
-    const bytes = try serde.msgpack.toSlice(allocator, nested_value);
-    defer allocator.free(bytes);
+    const bytes = msgpack_input;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const value = try serde.msgpack.fromSlice(Nested, arena.allocator(), bytes);
@@ -608,10 +616,11 @@ fn opCsvLargeRoundtrip(allocator: Allocator) !usize {
 fn opNdjsonLargeDeserialize(allocator: Allocator) !usize {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var it = std.mem.tokenizeScalar(u8, large_ndjson, '\n');
+    var reader: compat.Io.Reader = .fixed(large_ndjson);
+    var stream = serde.helpers.StreamingDeserializer(Row).init(arena.allocator(), &reader);
+    defer stream.deinit();
     var count: usize = 0;
-    while (it.next()) |line| {
-        const row = try serde.json.fromSlice(Row, arena.allocator(), line);
+    while (try stream.next()) |row| {
         std.mem.doNotOptimizeAway(row);
         count += 1;
     }
@@ -631,7 +640,25 @@ fn opNdjsonLargeSerialize(allocator: Allocator) !usize {
     return out.len;
 }
 
+fn opJsonFlatCpu(allocator: Allocator) !usize {
+    _ = allocator;
+    _ = cpu_arena.reset(.retain_capacity);
+    const value = try serde.json.fromSlice(Flat, cpu_arena.allocator(), flat_json);
+    std.mem.doNotOptimizeAway(value);
+    return flat_json.len;
+}
+
+fn opJsonWriterCpu(_: Allocator) !usize {
+    var buf: [1024]u8 = undefined;
+    var writer: compat.Io.Writer = .fixed(&buf);
+    try serde.json.toWriter(&writer, flat_value);
+    std.mem.doNotOptimizeAway(buf);
+    return writer.end;
+}
+
 const benchmarks = [_]Benchmark{
+    .{ .id = "json.flat.deserialize.serde.cpu", .format = "json", .case_name = "flat_struct", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = flat_json.len, .key_case = true, .run = opJsonFlatCpu },
+    .{ .id = "json.flat.serialize.serde.cpu", .format = "json", .case_name = "flat_struct", .operation = "serialize", .implementation = "serde", .mode = .cpu, .input_bytes = flat_json.len, .key_case = true, .run = opJsonWriterCpu },
     .{ .id = "json.flat.serialize.serde.warm", .format = "json", .case_name = "flat_struct", .operation = "serialize", .implementation = "serde", .mode = .warm, .input_bytes = flat_json.len, .key_case = true, .run = opJsonFlatSerialize },
     .{ .id = "json.flat.deserialize.serde.warm", .format = "json", .case_name = "flat_struct", .operation = "deserialize", .implementation = "serde", .mode = .warm, .input_bytes = flat_json.len, .key_case = true, .run = opJsonFlatDeserialize },
     .{ .id = "json.flat.roundtrip.serde.warm", .format = "json", .case_name = "flat_struct", .operation = "roundtrip", .implementation = "serde", .mode = .warm, .input_bytes = flat_json.len, .key_case = true, .run = opJsonFlatRoundtrip },
@@ -703,7 +730,7 @@ fn renderText(allocator: Allocator, results: []const BenchResult) ![]u8 {
 
 fn renderJson(allocator: Allocator, results: []const BenchResult) ![]u8 {
     var aw: compat.Io.Writer.Allocating = .init(allocator);
-    try aw.writer.writeAll("{\"schema_version\":1,\"results\":[");
+    try aw.writer.writeAll("{\"schema_version\":2,\"results\":[");
     for (results, 0..) |result, i| {
         if (i != 0) try aw.writer.writeByte(',');
         try aw.writer.writeByte('{');
@@ -725,6 +752,7 @@ fn renderJson(allocator: Allocator, results: []const BenchResult) ![]u8 {
             result.output_size_bytes,
             result.key_case,
         });
+        try aw.writer.print(",\"samples\":7,\"min_ns_per_op\":{d:.3},\"max_ns_per_op\":{d:.3}", .{ result.min_ns_per_op, result.max_ns_per_op });
         if (result.regression_percent) |pct| {
             try aw.writer.print(",\"regression_percent\":{d:.3},\"regression_over_threshold\":{}", .{ pct, result.regression_over_threshold });
         }
@@ -757,6 +785,14 @@ fn writeEscapedJsonString(writer: *compat.Io.Writer, value: []const u8) !void {
 fn applyBaseline(allocator: Allocator, results: []BenchResult, baseline_path: []const u8, threshold_percent: f64) !void {
     const baseline = try compat.readFileAlloc(allocator, baseline_path, 10 * 1024 * 1024);
     defer allocator.free(baseline);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, baseline, .{});
+    defer parsed.deinit();
+    if (parsed.value.object.get("schema_version").?.integer != 2) return error.IncompatibleBaseline;
+    for (parsed.value.object.get("results").?.array.items) |old| {
+        if (!std.mem.eql(u8, old.object.get("zig_version").?.string, builtin.zig_version_string) or
+            !std.mem.eql(u8, old.object.get("target").?.string, @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin.os.tag)) or
+            !std.mem.eql(u8, old.object.get("optimize").?.string, @tagName(builtin.mode))) return error.IncompatibleBaseline;
+    }
     for (results) |*result| {
         const old_ns = findBaselineNs(baseline, result.id, result.implementation) orelse continue;
         if (old_ns <= 0) continue;
@@ -811,7 +847,7 @@ test "counting allocator records allocations" {
 }
 
 test "baseline lookup parses ns_per_op" {
-    const json = "{\"schema_version\":1,\"results\":[{\"id\":\"json.flat.serialize.serde.warm\",\"implementation\":\"serde\",\"ns_per_op\":123.5}]}";
+    const json = "{\"schema_version\":2,\"results\":[{\"id\":\"json.flat.serialize.serde.warm\",\"implementation\":\"serde\",\"ns_per_op\":123.5}]}";
     const ns = findBaselineNs(json, "json.flat.serialize.serde.warm", "serde").?;
     try std.testing.expectEqual(@as(f64, 123.5), ns);
 }
