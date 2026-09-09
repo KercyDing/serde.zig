@@ -135,14 +135,17 @@ fn managedPathsInner(allocator: std.mem.Allocator) !void {
         var parsed = try format.fromSliceManaged(T, allocator, input);
         defer parsed.deinit();
         try testing.expectEqualStrings("owned", parsed.value.name);
-        var schema_parsed = try format.fromSliceManagedSchema(T, allocator, input, .{});
+        var schema_parsed = try format.fromSliceManagedSchema(T, allocator, input, .{ .skip_deserializing = .{ .count = true }, .default = .{ .count = 11 } });
         defer schema_parsed.deinit();
-        try testing.expectEqual(@as(i32, 7), schema_parsed.value.count);
+        try testing.expectEqual(@as(i32, 11), schema_parsed.value.count);
     }
     const csv_input = "name,count\nowned,7\n";
     var csv = try serde.csv.fromSliceManaged([]const T, allocator, csv_input);
     defer csv.deinit();
     try testing.expectEqualStrings("owned", csv.value[0].name);
+    var csv_schema = try serde.csv.fromSliceManagedSchema([]const T, allocator, "label,count\nowned,7\n", .{ .rename = .{ .name = "label" } });
+    defer csv_schema.deinit();
+    try testing.expectEqualStrings("owned", csv_schema.value[0].name);
     var map = try serde.json.fromSliceManaged(std.StringHashMap(i32), allocator, "{\"a\":1}");
     defer map.deinit();
     // A retained allocator must refer to the heap arena, even after return.
@@ -358,4 +361,105 @@ test "flatten inherits parent defaults and cleans up partial overrides" {
     try testing.expectEqualStrings("static", value.nested.text);
     try testing.expectEqual(@as(i32, 8), value.nested.count);
     try testing.expectError(error.MissingField, serde.json.fromSlice(T, alloc, "{\"text\":\"owned\"}"));
+}
+
+const WideRecord = struct {
+    f0: i32 = 0,
+    f1: i32 = 0,
+    f2: i32 = 0,
+    f3: i32 = 0,
+    f4: i32 = 0,
+    f5: i32 = 0,
+    f6: i32 = 0,
+    f7: i32 = 0,
+    f8: i32 = 0,
+    f9: i32 = 0,
+    f10: i32 = 0,
+    f11: i32 = 0,
+    f12: i32 = 0,
+    f13: i32 = 0,
+    f14: i32 = 0,
+    f15: i32 = 0,
+    f16: i32 = 0,
+    f17: i32 = 0,
+    f18: i32 = 0,
+    f19: i32 = 0,
+    f20: i32 = 0,
+    f21: i32 = 0,
+    f22: i32 = 0,
+    f23: i32 = 0,
+    f24: i32 = 0,
+    f25: i32 = 0,
+    f26: i32 = 0,
+    f27: i32 = 0,
+    f28: i32 = 0,
+    f29: i32 = 0,
+    f30: i32 = 0,
+    f31: i32 = 0,
+    f32: i32 = 0,
+    f33: i32 = 0,
+    f34: i32 = 0,
+    f35: i32 = 0,
+    f36: i32 = 0,
+    f37: i32 = 0,
+    f38: i32 = 0,
+    text: []const u8 = "default",
+    pub const serde = .{ .alias = .{ .text = &.{"label"} } };
+};
+fn wideRecordPaths(allocator: std.mem.Allocator) !void {
+    const value = WideRecord{
+        .f0 = 1,
+        .f1 = 2,
+        .f2 = 3,
+        .f3 = 4,
+        .f4 = 5,
+        .f5 = 6,
+        .f6 = 7,
+        .f7 = 8,
+        .f8 = 9,
+        .f9 = 10,
+        .f10 = 11,
+        .f11 = 12,
+        .f12 = 13,
+        .f13 = 14,
+        .f14 = 15,
+        .f15 = 16,
+        .f16 = 17,
+        .f17 = 18,
+        .f18 = 19,
+        .f19 = 20,
+        .f20 = 21,
+        .f21 = 22,
+        .f22 = 23,
+        .f23 = 24,
+        .f24 = 25,
+        .f25 = 26,
+        .f26 = 27,
+        .f27 = 28,
+        .f28 = 29,
+        .f29 = 30,
+        .f30 = 31,
+        .f31 = 32,
+        .f32 = 33,
+        .f33 = 34,
+        .f34 = 35,
+        .f35 = 36,
+        .f36 = 37,
+        .f37 = 38,
+        .f38 = 39,
+        .text = "owned",
+    };
+    const bytes = serde.json.toSlice(allocator, value) catch |err| return if (err == error.WriteFailed) error.OutOfMemory else err;
+    defer allocator.free(bytes);
+    const roundtrip = try serde.json.fromSlice(WideRecord, allocator, bytes);
+    defer de.freeAllocated(WideRecord, roundtrip, allocator);
+    try testing.expectEqualDeep(value, roundtrip);
+    const alias = try serde.json.fromSlice(WideRecord, allocator, "{\"label\":\"alias\",\"f38\":39,\"extra\":[1,2]}");
+    defer de.freeAllocated(WideRecord, alias, allocator);
+    try testing.expectEqualStrings("alias", alias.text);
+    try testing.expectEqual(@as(i32, 39), alias.f38);
+}
+test "wide field table preserves indices aliases and failure cleanup" {
+    try testing.checkAllAllocationFailures(alloc, wideRecordPaths, .{});
+    try testing.expectError(error.DuplicateField, serde.json.fromSlice(WideRecord, alloc, "{\"text\":\"first\",\"label\":\"second\"}"));
 }
