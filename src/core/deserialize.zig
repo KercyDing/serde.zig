@@ -201,22 +201,30 @@ fn structFromMap(comptime T: type, allocator: Allocator, map: anytype, comptime 
             }
         }
         var matched = false;
-        inline for (fields, 0..) |F, i| {
-            if (comptime opts.shouldSkipFieldSchema(F.Parent, F.field.name, .deserialize, F.schema)) continue;
-            if (!matched and opts.matchesDeserializeName(F.Parent, F.field.name, key, F.schema)) {
-                if (seen.isSet(i)) return map.raiseError(error.DuplicateField);
-                if (comptime opts.hasFieldWithSchema(F.Parent, F.field.name, F.schema)) {
-                    const With = comptime opts.getFieldWithSchema(F.Parent, F.field.name, F.schema);
-                    const raw = try nextValue(With.WireType, allocator, map, oob_map);
-                    // Allocating helpers create a distinct result; nonallocating helpers may borrow raw.
-                    if (@hasDecl(With, "deserializeAlloc")) {
-                        defer ownership.free(With.WireType, raw, allocator, {}, ownership.borrowedInput(map));
-                        F.ptr(&result).* = With.deserializeAlloc(raw, allocator) catch |err| return map.raiseError(if (err == error.OutOfMemory) error.OutOfMemory else error.WithFailed);
-                    } else F.ptr(&result).* = With.deserialize(raw);
-                } else F.ptr(&result).* = try nextValue(F.field.type, allocator, map, oob_map);
-                seen.set(i);
-                matched = true;
+        if (comptime fields.len <= 32) {
+            inline for (fields, 0..) |F, i| {
+                if (comptime opts.shouldSkipFieldSchema(F.Parent, F.field.name, .deserialize, F.schema)) continue;
+                if (!matched and opts.matchesDeserializeName(F.Parent, F.field.name, key, F.schema)) {
+                    if (seen.isSet(i)) return map.raiseError(error.DuplicateField);
+                    if (comptime opts.hasFieldWithSchema(F.Parent, F.field.name, F.schema)) {
+                        const With = comptime opts.getFieldWithSchema(F.Parent, F.field.name, F.schema);
+                        const raw = try nextValue(With.WireType, allocator, map, oob_map);
+                        // Allocating helpers create a distinct result; nonallocating helpers may borrow raw.
+                        if (@hasDecl(With, "deserializeAlloc")) {
+                            defer ownership.free(With.WireType, raw, allocator, {}, ownership.borrowedInput(map));
+                            F.ptr(&result).* = With.deserializeAlloc(raw, allocator) catch |err| return map.raiseError(if (err == error.OutOfMemory) error.OutOfMemory else error.WithFailed);
+                        } else F.ptr(&result).* = With.deserialize(raw);
+                    } else F.ptr(&result).* = try nextValue(F.field.type, allocator, map, oob_map);
+                    seen.set(i);
+                    matched = true;
+                }
             }
+        } else if (field_meta.lookup(T, schema, key)) |i| {
+            switch (i) {
+                inline 0...fields.len - 1 => |index| try readStructField(fields[index], index, &result, &seen, allocator, map, oob_map),
+                else => unreachable,
+            }
+            matched = true;
         }
         if (!matched) {
             if (comptime opts.denyUnknownFieldsSchema(T, schema)) return map.raiseError(error.UnknownField);
@@ -234,6 +242,20 @@ fn structFromMap(comptime T: type, allocator: Allocator, map: anytype, comptime 
         }
     }
     return result;
+}
+
+inline fn readStructField(comptime F: type, comptime i: usize, result: anytype, seen: anytype, allocator: Allocator, map: anytype, comptime oob_map: anytype) @TypeOf(map.*).Error!void {
+    if (seen.isSet(i)) return map.raiseError(error.DuplicateField);
+    if (comptime opts.hasFieldWithSchema(F.Parent, F.field.name, F.schema)) {
+        const With = comptime opts.getFieldWithSchema(F.Parent, F.field.name, F.schema);
+        const raw = try nextValue(With.WireType, allocator, map, oob_map);
+        // Allocating helpers create a distinct result; nonallocating helpers may borrow raw.
+        if (@hasDecl(With, "deserializeAlloc")) {
+            defer ownership.free(With.WireType, raw, allocator, {}, ownership.borrowedInput(map));
+            F.ptr(result).* = With.deserializeAlloc(raw, allocator) catch |err| return map.raiseError(if (err == error.OutOfMemory) error.OutOfMemory else error.WithFailed);
+        } else F.ptr(result).* = With.deserialize(raw);
+    } else F.ptr(result).* = try nextValue(F.field.type, allocator, map, oob_map);
+    seen.set(i);
 }
 
 pub fn freeKey(map: anytype, key: []const u8, allocator: Allocator) void {

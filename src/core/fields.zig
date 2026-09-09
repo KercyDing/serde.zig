@@ -95,3 +95,44 @@ pub fn validate(comptime T: type, comptime schema: anytype, comptime dir: opts.D
     }
 }
 
+/// Wire names and aliases share a single field index, including flattened paths.
+pub fn lookup(comptime T: type, comptime schema: anytype, key: []const u8) ?usize {
+    const fs = comptime leaves(T, schema, .deserialize);
+    // Measurements favor direct comparisons through 32 fields.
+    if (comptime fs.len <= 32) {
+        inline for (fs, 0..) |F, i| {
+            if (comptime opts.shouldSkipFieldSchema(F.Parent, F.field.name, .deserialize, F.schema)) continue;
+            if (opts.matchesDeserializeName(F.Parent, F.field.name, key, F.schema)) return i;
+        }
+        return null;
+    }
+    const table = comptime blk: {
+        @setEvalBranchQuota(100_000);
+        var count: usize = 0;
+        for (fs) |F| {
+            if (opts.shouldSkipFieldSchema(F.Parent, F.field.name, .deserialize, F.schema)) continue;
+            count += 1 + opts.getFieldAliases(F.Parent, F.field.name, F.schema).len;
+        }
+        const capacity = std.math.ceilPowerOfTwo(usize, @max(2, count * 2)) catch unreachable;
+        var entries: [capacity]?struct { name: []const u8, index: usize } = @splat(null);
+        for (fs, 0..) |F, i| {
+            if (opts.shouldSkipFieldSchema(F.Parent, F.field.name, .deserialize, F.schema)) continue;
+            const primary = opts.wireFieldNameForDir(F.Parent, F.field.name, F.schema, .deserialize);
+            var slot = std.hash.Fnv1a_64.hash(primary) & (capacity - 1);
+            while (entries[slot] != null) slot = (slot + 1) & (capacity - 1);
+            entries[slot] = .{ .name = primary, .index = i };
+            for (opts.getFieldAliases(F.Parent, F.field.name, F.schema)) |alias| {
+                slot = std.hash.Fnv1a_64.hash(alias) & (capacity - 1);
+                while (entries[slot] != null) slot = (slot + 1) & (capacity - 1);
+                entries[slot] = .{ .name = alias, .index = i };
+            }
+        }
+        break :blk entries;
+    };
+    var slot = std.hash.Fnv1a_64.hash(key) & (table.len - 1);
+    while (table[slot]) |entry| {
+        if (std.mem.eql(u8, entry.name, key)) return entry.index;
+        slot = (slot + 1) & (table.len - 1);
+    }
+    return null;
+}
