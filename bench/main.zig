@@ -92,6 +92,12 @@ const command_value = Command{ .write = .{ .key = "feature", .value = "bench" } 
 const command_json = "{\"write\":{\"key\":\"feature\",\"value\":\"bench\"}}";
 const enum_json = "\"green\"";
 const borrowed_json = "{\"id\":99,\"title\":\"zero copy\",\"body\":\"plain string without escapes\"}";
+const long_sparse_text = blk: {
+    @setEvalBranchQuota(20_000);
+    var text: [129 * 128]u8 = undefined;
+    for (&text, 0..) |*byte, i| byte.* = if (i % 129 == 128) '\n' else 'a';
+    break :blk text;
+};
 const long_plain_json = makePlainStringJson(16 * 1024);
 const long_escaped_json = makeEscapedStringJson(8 * 1024);
 const long_sparse_escaped_json = makeSparseEscapedStringJson(128, 128);
@@ -163,6 +169,137 @@ const large_ndjson =
     "{\"id\":7,\"name\":\"golf\",\"active\":true,\"score\":70.5}\n" ++
     "{\"id\":8,\"name\":\"hotel\",\"active\":false,\"score\":80.25}\n";
 
+const Wide = struct {
+    f0: i32,
+    f1: i32,
+    f2: i32,
+    f3: i32,
+    f4: i32,
+    f5: i32,
+    f6: i32,
+    f7: i32,
+    f8: i32,
+    f9: i32,
+    f10: i32,
+    f11: i32,
+    f12: i32,
+    f13: i32,
+    f14: i32,
+    f15: i32,
+    f16: i32,
+    f17: i32,
+    f18: i32,
+    f19: i32,
+    f20: i32,
+    f21: i32,
+    f22: i32,
+    f23: i32,
+    pub const serde = .{ .alias = .{ .f0 = &.{"zero"} } };
+};
+const Wide64 = struct {
+    field_000: i32,
+    field_001: i32,
+    field_002: i32,
+    field_003: i32,
+    field_004: i32,
+    field_005: i32,
+    field_006: i32,
+    field_007: i32,
+    field_008: i32,
+    field_009: i32,
+    field_010: i32,
+    field_011: i32,
+    field_012: i32,
+    field_013: i32,
+    field_014: i32,
+    field_015: i32,
+    field_016: i32,
+    field_017: i32,
+    field_018: i32,
+    field_019: i32,
+    field_020: i32,
+    field_021: i32,
+    field_022: i32,
+    field_023: i32,
+    field_024: i32,
+    field_025: i32,
+    field_026: i32,
+    field_027: i32,
+    field_028: i32,
+    field_029: i32,
+    field_030: i32,
+    field_031: i32,
+    field_032: i32,
+    field_033: i32,
+    field_034: i32,
+    field_035: i32,
+    field_036: i32,
+    field_037: i32,
+    field_038: i32,
+    field_039: i32,
+    field_040: i32,
+    field_041: i32,
+    field_042: i32,
+    field_043: i32,
+    field_044: i32,
+    field_045: i32,
+    field_046: i32,
+    field_047: i32,
+    field_048: i32,
+    field_049: i32,
+    field_050: i32,
+    field_051: i32,
+    field_052: i32,
+    field_053: i32,
+    field_054: i32,
+    field_055: i32,
+    field_056: i32,
+    field_057: i32,
+    field_058: i32,
+    field_059: i32,
+    field_060: i32,
+    field_061: i32,
+    field_062: i32,
+    field_063: i32,
+};
+const wide64_json = "{\"field_000\":0,\"field_001\":1,\"field_002\":2,\"field_003\":3,\"field_004\":4,\"field_005\":5,\"field_006\":6,\"field_007\":7,\"field_008\":8,\"field_009\":9,\"field_010\":10,\"field_011\":11,\"field_012\":12,\"field_013\":13,\"field_014\":14,\"field_015\":15,\"field_016\":16,\"field_017\":17,\"field_018\":18,\"field_019\":19,\"field_020\":20,\"field_021\":21,\"field_022\":22,\"field_023\":23,\"field_024\":24,\"field_025\":25,\"field_026\":26,\"field_027\":27,\"field_028\":28,\"field_029\":29,\"field_030\":30,\"field_031\":31,\"field_032\":32,\"field_033\":33,\"field_034\":34,\"field_035\":35,\"field_036\":36,\"field_037\":37,\"field_038\":38,\"field_039\":39,\"field_040\":40,\"field_041\":41,\"field_042\":42,\"field_043\":43,\"field_044\":44,\"field_045\":45,\"field_046\":46,\"field_047\":47,\"field_048\":48,\"field_049\":49,\"field_050\":50,\"field_051\":51,\"field_052\":52,\"field_053\":53,\"field_054\":54,\"field_055\":55,\"field_056\":56,\"field_057\":57,\"field_058\":58,\"field_059\":59,\"field_060\":60,\"field_061\":61,\"field_062\":62,\"field_063\":63}";
+const wide_json = "{\"f0\":0,\"f1\":1,\"f2\":2,\"f3\":3,\"f4\":4,\"f5\":5,\"f6\":6,\"f7\":7,\"f8\":8,\"f9\":9,\"f10\":10,\"f11\":11,\"f12\":12,\"f13\":13,\"f14\":14,\"f15\":15,\"f16\":16,\"f17\":17,\"f18\":18,\"f19\":19,\"f20\":20,\"f21\":21,\"f22\":22,\"f23\":23}";
+const wide_shuffled_json = "{\"f23\":23,\"f22\":22,\"f21\":21,\"f20\":20,\"f19\":19,\"f18\":18,\"f17\":17,\"f16\":16,\"f15\":15,\"f14\":14,\"f13\":13,\"f12\":12,\"f11\":11,\"f10\":10,\"f9\":9,\"f8\":8,\"f7\":7,\"f6\":6,\"f5\":5,\"f4\":4,\"f3\":3,\"f2\":2,\"f1\":1,\"zero\":0}";
+fn cpuParse(comptime T: type, comptime input: []const u8, comptime Format: type) BenchFn {
+    return struct {
+        fn run(_: Allocator) !usize {
+            _ = cpu_arena.reset(.retain_capacity);
+            const value = try Format.fromSlice(T, cpu_arena.allocator(), input);
+            std.mem.doNotOptimizeAway(value);
+            return input.len;
+        }
+    }.run;
+}
+fn cpuStringSerialize(comptime value: []const u8) BenchFn {
+    return struct {
+        fn run(_: Allocator) !usize {
+            var buffer: [128 * 1024]u8 = undefined;
+            var writer: compat.Io.Writer = .fixed(&buffer);
+            try serde.json.toWriter(&writer, StringDocument{ .text = value });
+            std.mem.doNotOptimizeAway(buffer[0..writer.end]);
+            return writer.end;
+        }
+    }.run;
+}
+fn opNdjsonCpu(_: Allocator) !usize {
+    _ = cpu_arena.reset(.retain_capacity);
+    var reader: compat.Io.Reader = .fixed(large_ndjson);
+    var stream = serde.helpers.StreamingDeserializer(Row).init(cpu_arena.allocator(), &reader);
+    defer stream.deinit();
+    while (try stream.next()) |row| std.mem.doNotOptimizeAway(row);
+    return large_ndjson.len;
+}
+fn opMsgpackCpu(_: Allocator) !usize {
+    _ = cpu_arena.reset(.retain_capacity);
+    const value = try serde.msgpack.fromSlice(Nested, cpu_arena.allocator(), msgpack_input);
+    std.mem.doNotOptimizeAway(value);
+    return msgpack_input.len;
+}
 const BenchFn = *const fn (Allocator) anyerror!usize;
 
 const Benchmark = struct {
@@ -290,7 +427,7 @@ fn runAll(allocator: Allocator, results: *std.ArrayList(BenchResult)) !void {
 }
 
 fn runBenchmark(bench: Benchmark) !BenchResult {
-    const warmup_iters: usize = if (bench.mode == .warm) 20 else 1;
+    const warmup_iters: usize = if (bench.mode != .cold) 20 else 1;
     for (0..warmup_iters) |_| {
         _ = try bench.run(std.heap.page_allocator);
     }
@@ -300,10 +437,10 @@ fn runBenchmark(bench: Benchmark) !BenchResult {
     const probe_size = try bench.run(probe_alloc.allocator());
     const probe_ns = @max(nowNs() - probe_start, 1);
 
-    const target_ns: u64 = if (bench.mode == .warm) 150 * std.time.ns_per_ms else 50 * std.time.ns_per_ms;
+    const target_ns: u64 = if (bench.mode != .cold) 150 * std.time.ns_per_ms else 50 * std.time.ns_per_ms;
     var iterations: usize = @intCast(@max(@as(u64, 1), target_ns / probe_ns));
-    const max_iterations: usize = if (bench.mode == .warm) 10_000 else 1_000;
-    const min_iterations: usize = if (bench.mode == .warm) 20 else 5;
+    const max_iterations: usize = if (bench.mode == .cpu) 10_000_000 else if (bench.mode == .warm) 1_000_000 else 100_000;
+    const min_iterations: usize = if (bench.mode != .cold) 20 else 5;
     iterations = @min(iterations, max_iterations);
     iterations = @max(iterations, min_iterations);
 
@@ -321,7 +458,7 @@ fn runBenchmark(bench: Benchmark) !BenchResult {
     }
     std.mem.sort(f64, &samples, {}, std.sort.asc(f64));
     const ns_per_op = samples[3];
-    const bytes_per_op: f64 = @floatFromInt(if (std.mem.eql(u8, bench.format, "msgpack")) msgpack_input.len else bench.input_bytes);
+    const bytes_per_op: f64 = @floatFromInt(if (std.mem.eql(u8, bench.operation, "serialize")) output_size else if (std.mem.eql(u8, bench.format, "msgpack")) msgpack_input.len else bench.input_bytes);
     const throughput = bytes_per_op / ns_per_op * std.time.ns_per_s / (1024.0 * 1024.0);
     std.mem.doNotOptimizeAway(probe_size);
 
@@ -624,7 +761,8 @@ fn opNdjsonLargeDeserialize(allocator: Allocator) !usize {
         std.mem.doNotOptimizeAway(row);
         count += 1;
     }
-    return large_ndjson.len + count;
+    std.mem.doNotOptimizeAway(count);
+    return large_ndjson.len;
 }
 
 fn opNdjsonLargeSerialize(allocator: Allocator) !usize {
@@ -657,6 +795,20 @@ fn opJsonWriterCpu(_: Allocator) !usize {
 }
 
 const benchmarks = [_]Benchmark{
+    .{ .id = "json.wide64.deserialize.serde.cpu", .format = "json", .case_name = "wide64", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = wide64_json.len, .key_case = true, .run = cpuParse(Wide64, wide64_json, serde.json) },
+    .{ .id = "json.wide.deserialize.serde.cpu", .format = "json", .case_name = "wide", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = (wide_json).len, .key_case = true, .run = cpuParse(Wide, wide_json, serde.json) },
+    .{ .id = "json.wide_shuffled_alias.deserialize.serde.cpu", .format = "json", .case_name = "wide_shuffled_alias", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = (wide_shuffled_json).len, .key_case = true, .run = cpuParse(Wide, wide_shuffled_json, serde.json) },
+    .{ .id = "json.nested.deserialize.serde.cpu", .format = "json", .case_name = "nested", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = (nested_json).len, .key_case = true, .run = cpuParse(Nested, nested_json, serde.json) },
+    .{ .id = "json.array_struct.deserialize.serde.cpu", .format = "json", .case_name = "array_struct", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = (rows_json).len, .key_case = true, .run = cpuParse([]const Row, rows_json, serde.json) },
+    .{ .id = "json.long_plain.serialize.serde.cpu", .format = "json", .case_name = "long_plain", .operation = "serialize", .implementation = "serde", .mode = .cpu, .input_bytes = 16384, .key_case = true, .run = cpuStringSerialize((&long_plain_json)[9 .. long_plain_json.len - 2]) },
+    .{ .id = "json.long_sparse_escaped.serialize.serde.cpu", .format = "json", .case_name = "long_sparse_escaped", .operation = "serialize", .implementation = "serde", .mode = .cpu, .input_bytes = 16512, .key_case = true, .run = cpuStringSerialize(&long_sparse_text) },
+    .{ .id = "json.long_plain.deserialize.serde.cpu", .format = "json", .case_name = "long_plain", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = (&long_plain_json).len, .key_case = true, .run = cpuParse(StringDocument, &long_plain_json, serde.json) },
+    .{ .id = "json.long_escaped.deserialize.serde.cpu", .format = "json", .case_name = "long_escaped", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = (&long_escaped_json).len, .key_case = true, .run = cpuParse(StringDocument, &long_escaped_json, serde.json) },
+    .{ .id = "json.long_sparse_escaped.deserialize.serde.cpu", .format = "json", .case_name = "long_sparse_escaped", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = (&long_sparse_escaped_json).len, .key_case = true, .run = cpuParse(StringDocument, &long_sparse_escaped_json, serde.json) },
+    .{ .id = "json.nested_collections.deserialize.serde.cpu", .format = "json", .case_name = "nested_collections", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = ("[[1,2,3],[4,5,6],[7,8,9]]").len, .key_case = true, .run = cpuParse([]const []const i32, "[[1,2,3],[4,5,6],[7,8,9]]", serde.json) },
+    .{ .id = "ndjson.nested.deserialize.serde.cpu", .format = "ndjson", .case_name = "nested", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = large_ndjson.len, .key_case = true, .run = opNdjsonCpu },
+    .{ .id = "msgpack.nested.deserialize.serde.cpu", .format = "msgpack", .case_name = "nested", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = 0, .key_case = true, .run = opMsgpackCpu },
+
     .{ .id = "json.flat.deserialize.serde.cpu", .format = "json", .case_name = "flat_struct", .operation = "deserialize", .implementation = "serde", .mode = .cpu, .input_bytes = flat_json.len, .key_case = true, .run = opJsonFlatCpu },
     .{ .id = "json.flat.serialize.serde.cpu", .format = "json", .case_name = "flat_struct", .operation = "serialize", .implementation = "serde", .mode = .cpu, .input_bytes = flat_json.len, .key_case = true, .run = opJsonWriterCpu },
     .{ .id = "json.flat.serialize.serde.warm", .format = "json", .case_name = "flat_struct", .operation = "serialize", .implementation = "serde", .mode = .warm, .input_bytes = flat_json.len, .key_case = true, .run = opJsonFlatSerialize },
@@ -782,53 +934,43 @@ fn writeEscapedJsonString(writer: *compat.Io.Writer, value: []const u8) !void {
     };
 }
 
+const Baseline = struct {
+    schema_version: u32,
+    results: []const struct {
+        id: []const u8,
+        implementation: []const u8,
+        zig_version: []const u8,
+        target: []const u8,
+        optimize: []const u8,
+        ns_per_op: f64,
+    },
+};
+fn parseBaseline(allocator: Allocator, bytes: []const u8) !std.json.Parsed(Baseline) {
+    const parsed = std.json.parseFromSlice(Baseline, allocator, bytes, .{ .ignore_unknown_fields = true }) catch |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.IncompatibleBaseline;
+    errdefer parsed.deinit();
+    if (parsed.value.schema_version != 2) return error.IncompatibleBaseline;
+    for (parsed.value.results) |old| {
+        if (!std.mem.eql(u8, old.zig_version, builtin.zig_version_string) or
+            !std.mem.eql(u8, old.target, @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin.os.tag)) or
+            !std.mem.eql(u8, old.optimize, @tagName(builtin.mode)) or
+            !std.math.isFinite(old.ns_per_op) or old.ns_per_op <= 0) return error.IncompatibleBaseline;
+    }
+    return parsed;
+}
 fn applyBaseline(allocator: Allocator, results: []BenchResult, baseline_path: []const u8, threshold_percent: f64) !void {
     const baseline = try compat.readFileAlloc(allocator, baseline_path, 10 * 1024 * 1024);
     defer allocator.free(baseline);
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, baseline, .{});
+    const parsed = try parseBaseline(allocator, baseline);
     defer parsed.deinit();
-    if (parsed.value.object.get("schema_version").?.integer != 2) return error.IncompatibleBaseline;
-    for (parsed.value.object.get("results").?.array.items) |old| {
-        if (!std.mem.eql(u8, old.object.get("zig_version").?.string, builtin.zig_version_string) or
-            !std.mem.eql(u8, old.object.get("target").?.string, @tagName(builtin.cpu.arch) ++ "-" ++ @tagName(builtin.os.tag)) or
-            !std.mem.eql(u8, old.object.get("optimize").?.string, @tagName(builtin.mode))) return error.IncompatibleBaseline;
-    }
     for (results) |*result| {
-        const old_ns = findBaselineNs(baseline, result.id, result.implementation) orelse continue;
-        if (old_ns <= 0) continue;
-        const pct = ((result.ns_per_op - old_ns) / old_ns) * 100.0;
-        result.regression_percent = pct;
-        result.regression_over_threshold = result.key_case and pct > threshold_percent;
-    }
-}
-
-fn findBaselineNs(json: []const u8, id: []const u8, implementation: []const u8) ?f64 {
-    var search_from: usize = 0;
-    while (std.mem.indexOfPos(u8, json, search_from, "\"id\":\"")) |id_key| {
-        const value_start = id_key + "\"id\":\"".len;
-        const value_end = std.mem.indexOfScalarPos(u8, json, value_start, '"') orelse return null;
-        if (std.mem.eql(u8, json[value_start..value_end], id)) {
-            const object_end = std.mem.indexOfScalarPos(u8, json, value_end, '}') orelse return null;
-            const object = json[id_key..object_end];
-            const impl_pos = std.mem.indexOf(u8, object, "\"implementation\":\"") orelse {
-                search_from = object_end + 1;
-                continue;
-            };
-            const impl_start = impl_pos + "\"implementation\":\"".len;
-            const impl_end = std.mem.indexOfScalarPos(u8, object, impl_start, '"') orelse return null;
-            if (!std.mem.eql(u8, object[impl_start..impl_end], implementation)) {
-                search_from = object_end + 1;
-                continue;
-            }
-            const ns_pos = std.mem.indexOf(u8, object, "\"ns_per_op\":") orelse return null;
-            const ns_start = ns_pos + "\"ns_per_op\":".len;
-            var ns_end = ns_start;
-            while (ns_end < object.len and (std.ascii.isDigit(object[ns_end]) or object[ns_end] == '.' or object[ns_end] == '-')) ns_end += 1;
-            return std.fmt.parseFloat(f64, object[ns_start..ns_end]) catch null;
+        for (parsed.value.results) |old| {
+            if (!std.mem.eql(u8, old.id, result.id) or !std.mem.eql(u8, old.implementation, result.implementation)) continue;
+            const pct = ((result.ns_per_op - old.ns_per_op) / old.ns_per_op) * 100.0;
+            result.regression_percent = pct;
+            result.regression_over_threshold = result.key_case and pct > threshold_percent;
+            break;
         }
-        search_from = value_end + 1;
     }
-    return null;
 }
 
 test "parse output format" {
@@ -846,8 +988,9 @@ test "counting allocator records allocations" {
     try std.testing.expect(counter.bytes_allocated >= 16);
 }
 
-test "baseline lookup parses ns_per_op" {
-    const json = "{\"schema_version\":2,\"results\":[{\"id\":\"json.flat.serialize.serde.warm\",\"implementation\":\"serde\",\"ns_per_op\":123.5}]}";
-    const ns = findBaselineNs(json, "json.flat.serialize.serde.warm", "serde").?;
-    try std.testing.expectEqual(@as(f64, 123.5), ns);
+test "baseline rejects missing and incompatible metadata" {
+    try std.testing.expectError(error.IncompatibleBaseline, parseBaseline(std.testing.allocator, "{}"));
+    try std.testing.expectError(error.IncompatibleBaseline, parseBaseline(std.testing.allocator, "{\"schema_version\":1,\"results\":[]}"));
+    const empty = try parseBaseline(std.testing.allocator, "{ \"schema_version\": 2, \"results\": [] }");
+    defer empty.deinit();
 }
